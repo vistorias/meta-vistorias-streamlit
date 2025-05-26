@@ -8,8 +8,11 @@ st.set_page_config(layout="wide")
 st.title("📊 Acompanhamento de Meta Mensal - Vistorias")
 
 # 🔐 Conectar ao Google Sheets
+import json  # adicione essa linha no início se ainda não tiver
+
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("spatial-dryad-450219-j2-dd37fa8e548b.json", scope)
+creds_dict = st.secrets["gcp_service_account"]
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
 # 📄 Carregar planilha
