@@ -7,6 +7,13 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(layout="wide")
 st.title("📊 Acompanhamento de Meta Mensal - Vistorias")
 
+st.markdown("""
+<div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+    <h4 style="color: #cc3300; margin: 0;">👋 Bem-vindo(a) ao Painel de Acompanhamento de Metas!</h4>
+    <p style="margin: 5px 0 0 0;">Aqui você pode acompanhar em tempo real a performance das unidades e identificar oportunidades de melhoria com base nas metas do mês. Use os filtros à esquerda para ajustar os dados conforme o período desejado.</p>
+</div>
+""", unsafe_allow_html=True)
+
 # 🔐 Conectar ao Google Sheets
 import json  # adicione essa linha no início se ainda não tiver
 
