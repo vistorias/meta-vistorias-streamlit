@@ -31,6 +31,7 @@ df = pd.DataFrame(data)
 df['ticket_medio_real'] = pd.to_numeric(df['ticket_medio'], errors='coerce').fillna(0) / 100
 df['empresa'] = df['empresa'].str.upper()
 df['unidade'] = df['unidade'].str.upper()
+df['total'] = pd.to_numeric(df['total'], errors='coerce').fillna(0).astype(int)
 
 # Metas
 metas_unidades = {
