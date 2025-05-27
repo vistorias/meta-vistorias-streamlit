@@ -28,7 +28,7 @@ data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
 # 🎯 Ajustes iniciais
-df['ticket_medio_real'] = df['ticket_medio'] / 100
+df['ticket_medio_real'] = pd.to_numeric(df['ticket_medio'], errors='coerce').fillna(0) / 100
 df['empresa'] = df['empresa'].str.upper()
 df['unidade'] = df['unidade'].str.upper()
 
