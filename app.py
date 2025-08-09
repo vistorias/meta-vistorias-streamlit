@@ -3,9 +3,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, date
 
-# ========= Configuração básica =========
+# ========= Configuração =========
 st.set_page_config(layout="wide", page_title="Acompanhamento de Meta Mensal - Vistorias")
 st.title("📊 Acompanhamento de Meta Mensal - Vistorias")
 
@@ -16,87 +16,65 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ========= Conectar ao Google Sheets =========
-# Observação: mantenha suas credenciais no st.secrets["gcp_service_account"]
+# ========= Conexão ao Google Sheets =========
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_dict = st.secrets["gcp_service_account"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
-# ID da planilha (não mude se já estiver correto)
 SHEET_KEY = "1ooMhPk-R-Etzut4BHkxCTgYZx8fztHzDlhyXuS9TLGo"
-
-# Carregar dados
 sheet = client.open_by_key(SHEET_KEY).sheet1
 data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
-# ========= Padronizações e conversões =========
-# Nomes de colunas esperadas:
-# - empresa
-# - unidade
-# - total            (produção bruta do dia/acumulado)
-# - revistorias      (quantidade de revistorias)
-# - ticket_medio     (em centavos ou inteiro, como no seu painel anterior)
-# - %_190            (percentual de atendimentos >= R$ 190 – numérico)
-# - data_relatorio   (nova coluna com a data do relatório diário)
+# ========= Padronizações =========
+# Texto
+if "empresa" in df.columns: df["empresa"] = df["empresa"].astype(str).str.upper()
+if "unidade" in df.columns: df["unidade"] = df["unidade"].astype(str).str.upper()
 
-# Upper em textos
-if "empresa" in df.columns:
-    df["empresa"] = df["empresa"].astype(str).str.upper()
-if "unidade" in df.columns:
-    df["unidade"] = df["unidade"].astype(str).str.upper()
-
-# Converte numéricos
+# Números
 for col in ["total", "revistorias", "ticket_medio", "%_190"]:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-# Ticket médio em reais (mantendo a lógica anterior de dividir por 100)
-if "ticket_medio" in df.columns:
-    df["ticket_medio_real"] = df["ticket_medio"] / 100
-else:
-    df["ticket_medio_real"] = 0
+# Ticket médio (centavos -> reais, igual ao painel anterior)
+df["ticket_medio_real"] = (df["ticket_medio"] / 100) if "ticket_medio" in df.columns else 0
 
-# %_190 como inteiro para exibição
-if "%_190" not in df.columns:
-    df["%_190"] = 0
+# Garantias
+if "%_190" not in df.columns: df["%_190"] = 0
+if "revistorias" not in df.columns: df["revistorias"] = 0
 
-# Revistorias (se não existir, assume 0 para manter compatibilidade)
-if "revistorias" not in df.columns:
-    df["revistorias"] = 0
+# ========= Data do Relatório (aceita DATA ou data_relatorio) =========
+date_candidates = [c for c in ["data_relatorio", "DATA", "Data", "data"] if c in df.columns]
+date_col = date_candidates[0] if date_candidates else None
 
-# Data do relatório
-if "data_relatorio" in df.columns:
-    # Tenta converter automaticamente datas no formato brasileiro ou ISO
-    def parse_date(x):
-        if pd.isna(x) or x == "":
-            return pd.NaT
-        # Se vier como número (Sheets), tenta converter por epoch excel (não obrigatório normalmente)
-        if isinstance(x, (int, float)):
-            # Fallback: trata como serial do Excel (pouco comum nessa base)
-            try:
-                return pd.to_datetime('1899-12-30') + pd.to_timedelta(int(x), unit='D')
-            except:
-                return pd.NaT
-        # Strings comuns: "dd/mm/aaaa" ou "aaaa-mm-dd"
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
-            try:
-                return datetime.strptime(str(x), fmt).date()
-            except:
-                pass
-        # Último recurso
+def parse_date_value(x):
+    if pd.isna(x) or x == "":
+        return pd.NaT
+    # Serial do Google/Excel (raro aqui, mas deixamos seguro)
+    if isinstance(x, (int, float)) and not isinstance(x, bool):
         try:
-            return pd.to_datetime(x).date()
-        except:
-            return pd.NaT
+            return (pd.to_datetime("1899-12-30") + pd.to_timedelta(int(x), unit="D")).date()
+        except Exception:
+            pass
+    # Strings comuns
+    s = str(x).strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+    try:
+        return pd.to_datetime(s).date()
+    except Exception:
+        return pd.NaT
 
-    df["data_relatorio"] = df["data_relatorio"].apply(parse_date)
+if date_col:
+    df["__data__"] = df[date_col].apply(parse_date_value)
 else:
-    # Se não existir, cria vazia (sem filtro de data)
-    df["data_relatorio"] = pd.NaT
+    df["__data__"] = pd.NaT  # sem coluna de data
 
-# ========= Metas (mantida sua estrutura) =========
+# ========= Metas =========
 metas_unidades = {
     "TOKYO": {"BARRA DO CORDA": 650, "CHAPADINHA": 550, "SANTA INÊS": 2200, "SÃO JOÃO DOS PATOS": 435, "SÃO JOSÉ DE RIBAMAR": 2000},
     "STARCHECK": {"BACABAL": 1640, "BALSAS": 1505, "CAXIAS": 560, "CODÓ": 380, "PINHEIRO": 900, "SÃO LUÍS": 3200},
@@ -105,26 +83,31 @@ metas_unidades = {
 }
 metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
 
-# ========= Filtros (barra lateral) =========
+# ========= Filtros (sidebar) =========
 st.sidebar.header("📅 Dias úteis do mês")
 dias_uteis_total = st.sidebar.number_input("Dias úteis no mês", 1, 31, 21)
 dias_uteis_passados = st.sidebar.number_input("Dias úteis já passados", 0, 31, 16)
 dias_uteis_restantes = max(dias_uteis_total - dias_uteis_passados, 1)
 
-# Filtro por data (ao lado dos dias úteis)
 st.sidebar.markdown("---")
 st.sidebar.subheader("🗓️ Filtro por Data do Relatório")
-tem_data = df["data_relatorio"].notna().any()
-if tem_data:
-    datas_validas = sorted([d for d in df["data_relatorio"].unique() if pd.notna(d)])
-    data_default = datas_validas[-1] if len(datas_validas) > 0 else None
-    data_escolhida = st.sidebar.selectbox("Data do relatório", options=["(Mês inteiro)"] + [str(d) for d in datas_validas],
-                                          index=0 if data_default is None else datas_validas.index(data_default) + 1)
-    if data_escolhida != "(Mês inteiro)":
-        data_dt = pd.to_datetime(data_escolhida).date()
-        df = df[df["data_relatorio"] == data_dt]
+
+if df["__data__"].notna().any():
+    datas_validas = sorted({d for d in df["__data__"] if pd.notna(d)})
+    default_idx = 0  # "(Mês inteiro)"
+    if datas_validas:
+        # default na última data disponível
+        default_idx = 1 + len(datas_validas) - 1
+    escolha = st.sidebar.selectbox(
+        "Data do relatório",
+        options=["(Mês inteiro)"] + [d.strftime("%d/%m/%Y") for d in datas_validas],
+        index=default_idx
+    )
+    if escolha != "(Mês inteiro)":
+        data_escolhida = datetime.strptime(escolha, "%d/%m/%Y").date()
+        df = df[df["__data__"] == data_escolhida]
 else:
-    st.sidebar.info("Sua base ainda não possui a coluna **data_relatorio** ou está vazia. Exibindo mês inteiro.")
+    st.sidebar.info("Sua base possui a coluna de data (ex.: **DATA**) vazia ou não reconhecida. Exibindo mês inteiro.")
 
 # ========= Filtro de empresa =========
 empresas = sorted(df['empresa'].dropna().unique())
@@ -135,7 +118,7 @@ if len(empresas) == 0:
 empresa_selecionada = st.selectbox("Selecione a Marca:", empresas)
 df_filtrado = df[df['empresa'] == empresa_selecionada].copy()
 
-# ========= Consolidado da marca =========
+# ========= Consolidados (marca) =========
 meta_marca = metas_gerais.get(empresa_selecionada, 0)
 total_geral_marca = int(df_filtrado['total'].sum())
 total_rev_marca = int(df_filtrado['revistorias'].sum())
@@ -149,27 +132,18 @@ tendencia_marca = (projecao_marca / meta_marca * 100) if meta_marca else 0
 icone_tendencia = "🚀" if tendencia_marca >= 100 else "😟"
 necessidade_dia_marca = (faltante_marca / dias_uteis_restantes) if dias_uteis_restantes else 0
 
-# ========= Cartões (estilo) =========
+# ========= Estilo dos cartões =========
 st.markdown("""
 <style>
-.card-container {
-  display: flex; gap: 20px; margin-bottom: 30px; flex-wrap: wrap;
-}
-.card {
-  background-color: #f5f5f5; padding: 20px; border-radius: 12px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.1); text-align: center;
-  min-width: 170px; flex: 1;
-}
-.card h4 {
-  color: #cc3300; margin: 0 0 8px; font-size: 16px;
-}
-.card h2 {
-  margin: 0; font-size: 26px; font-weight: bold; color: #222;
-}
+.card-container { display: flex; gap: 20px; margin-bottom: 30px; flex-wrap: wrap; }
+.card { background-color: #f5f5f5; padding: 20px; border-radius: 12px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.1); text-align: center;
+        min-width: 170px; flex: 1; }
+.card h4 { color: #cc3300; margin: 0 0 8px; font-size: 16px; }
+.card h2 { margin: 0; font-size: 26px; font-weight: bold; color: #222; }
 </style>
 """, unsafe_allow_html=True)
 
-# ========= Cartões da marca =========
 st.markdown("### 🏢 Consolidado - " + empresa_selecionada)
 st.markdown(f"""
 <div class="card-container">
@@ -187,7 +161,6 @@ st.markdown(f"""
 # ========= Tabela por unidade =========
 st.subheader("📍 Indicadores por Unidade")
 
-# Agrega por unidade (caso a planilha traga linhas diárias)
 agrupado = df_filtrado.groupby("unidade", dropna=False, as_index=False).agg(
     total=("total", "sum"),
     revistorias=("revistorias", "sum"),
@@ -232,9 +205,8 @@ for _, row in agrupado.iterrows():
 
 st.dataframe(pd.DataFrame(dados), use_container_width=True)
 
-# ========= Gráfico por unidade (usando Total Líquido) =========
+# ========= Gráfico =========
 st.subheader("📊 Produção Realizada por Unidade (Líquido)")
-
 unidades = [d["Unidade"] for d in dados]
 producoes_liquidas = [d["Total Líquido"] for d in dados]
 
@@ -251,11 +223,10 @@ ax.set_xlabel("Unidade")
 ax.set_title("Produção Líquida por Unidade")
 st.pyplot(fig)
 
-# ========= Consolidado Geral (todas as marcas) =========
+# ========= Consolidado Geral =========
 st.markdown("---")
 st.markdown("## 🏢 Consolidado Geral - Total das 4 Marcas")
 
-# Agrega geral (após possível filtro de data)
 df_agg_geral = df.groupby("empresa", dropna=False).agg(
     total=("total", "sum"),
     rev=("revistorias", "sum")
