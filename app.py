@@ -32,7 +32,8 @@ if "empresa" in df.columns: df["empresa"] = df["empresa"].astype(str).str.upper(
 if "unidade" in df.columns: df["unidade"] = df["unidade"].astype(str).str.upper()
 
 for col in ["total", "revistorias", "ticket_medio", "%_190"]:
-    if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
 df["ticket_medio_real"] = df["ticket_medio"] / 100 if "ticket_medio" in df.columns else 0
 if "%_190" not in df.columns: df["%_190"] = 0
@@ -68,14 +69,14 @@ metas_unidades = {
 }
 metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
 
-# corrigir possível digitação de cidade
+# correção de possível digitação de cidade
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
-# ========== Filtros ==========
+# ========== Filtros (sidebar) ==========
 st.sidebar.header("📅 Dias úteis do mês")
-dias_uteis_total = st.sidebar.number_input("Dias úteis no mês", 1, 31, 21)
-dias_uteis_passados = st.sidebar.number_input("Dias úteis já passados", 0, 31, 16)
+dias_uteis_total = int(st.sidebar.slider("Dias úteis no mês", 1, 31, 21, step=1, key="dias_total"))
+dias_uteis_passados = int(st.sidebar.slider("Dias úteis já passados", 0, 31, 16, step=1, key="dias_passados"))
 dias_uteis_restantes = max(dias_uteis_total - dias_uteis_passados, 1)
 
 st.sidebar.markdown("---")
@@ -128,16 +129,14 @@ if daily_mode:
     meta_dia_marca = safe_div(meta_mes_marca, dias_uteis_total)
     faltante_dia = max(int(round(meta_dia_marca)) - total_liq_marca, 0)
     tendencia = safe_div(total_liq_marca, meta_dia_marca) * 100
-    proj_label = "Projeção (Dia)"
-    proj_val = total_liq_marca  # no dia, projeção = realizado do dia
     cards = [
         ("Meta do Dia", int(round(meta_dia_marca))),
         ("Total Geral (Dia)", total_geral_marca),
         ("Total Revistorias (Dia)", total_rev_marca),
         ("Total Líquido (Dia)", total_liq_marca),
         ("Faltante (Dia)", faltante_dia),
-        ("Necessidade/dia (Dia)", max(int(round(meta_dia_marca)) - total_liq_marca, 0)),
-        (proj_label, int(proj_val)),
+        ("Necessidade/dia (Dia)", faltante_dia),
+        ("Projeção (Dia)", total_liq_marca),
         ("Tendência (Dia)", f"{tendencia:.0f}% {'🚀' if tendencia >= 100 else '😟'}"),
     ]
 else:
@@ -197,13 +196,15 @@ for _, r in agr.iterrows():
     if daily_mode:
         meta_dia = safe_div(meta_mes, dias_uteis_total)
         faltante = max(int(round(meta_dia)) - liq, 0)
-        media = liq  # dia
-        proj_final = liq  # dia
         tendencia_u = safe_div(liq, meta_dia) * 100 if meta_dia else 0
         tendencia_txt = f"{tendencia_u:.0f}% {'🚀' if tendencia_u >= 100 else '😟'}"
         meta_col = int(round(meta_dia))
         falt_label = "Faltante (Dia)"
-        nec_dia = faltante  # no dia, o que falta hoje
+        nec_dia = faltante
+        total_label = "Total (Dia)"
+        rev_label = "Revistorias (Dia)"
+        liq_label = "Total Líquido (Dia)"
+        tend_label = "Tendência (Dia)"
     else:
         faltante = max(meta_mes - liq, 0)
         media = safe_div(liq, dias_uteis_passados)
@@ -213,6 +214,10 @@ for _, r in agr.iterrows():
         meta_col = meta_mes
         falt_label = "Faltante (sobre Líquido)"
         nec_dia = safe_div(faltante, dias_uteis_restantes)
+        total_label = "Total"
+        rev_label = "Revistorias"
+        liq_label = "Total Líquido"
+        tend_label = "Tendência"
 
     ticket = round(float(r["ticket_medio_real"]), 2)
     icon_ticket = "✅" if ticket >= 161.50 else "❌"
@@ -221,13 +226,13 @@ for _, r in agr.iterrows():
 
     linhas.append({
         "Unidade": unidade,
-        "Meta" if not daily_mode else "Meta do Dia": meta_col,
-        "Total" if not daily_mode else "Total (Dia)": total,
-        "Revistorias" if not daily_mode else "Revistorias (Dia)": rev,
-        "Total Líquido" if not daily_mode else "Total Líquido (Dia)": liq,
+        "Meta do Dia" if daily_mode else "Meta": int(meta_col),
+        total_label: total,
+        rev_label: rev,
+        liq_label: liq,
         falt_label: int(faltante),
-        "Necessidade/dia": round(nec_dia, 1) if not daily_mode else int(nec_dia),
-        "Tendência" if not daily_mode else "Tendência (Dia)": tendencia_txt,
+        "Necessidade/dia": int(nec_dia) if daily_mode else round(nec_dia, 1),
+        tend_label: tendencia_txt,
         "Ticket Médio (R$)": f"R$ {ticket:.2f} {icon_ticket}",
         "% ≥ R$190": f"{pct190:.0f}% {icon_190}"
     })
