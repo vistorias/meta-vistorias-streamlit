@@ -77,6 +77,11 @@ metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
+# =========================
+# Guardar o histórico completo ANTES de filtrar por data
+# =========================
+df_full = df.copy()
+
 # ========== Sidebar ==========
 st.sidebar.header("📅 Dias úteis do mês")
 dias_uteis_total = int(st.sidebar.slider("Dias úteis no mês", 1, 31, 21, step=1, key="dias_total"))
@@ -88,8 +93,9 @@ st.sidebar.subheader("🗓️ Filtro por Data do Relatório")
 daily_mode = False
 chosen_date = None
 
-if df["__data__"].notna().any():
-    datas_validas = sorted({d for d in df["__data__"] if pd.notna(d)})
+# usamos df_full para montar a lista de datas
+if df_full["__data__"].notna().any():
+    datas_validas = sorted({d for d in df_full["__data__"] if pd.notna(d)})
     default_idx = 0
     if datas_validas: default_idx = 1 + len(datas_validas) - 1
     escolha = st.sidebar.selectbox(
@@ -99,19 +105,26 @@ if df["__data__"].notna().any():
     )
     if escolha != "(Mês inteiro)":
         chosen_date = datetime.strptime(escolha, "%d/%m/%Y").date()
-        df = df[df["__data__"] == chosen_date]
+        df_view = df_full[df_full["__data__"] == chosen_date]   # << visão filtrada
         daily_mode = True
+    else:
+        df_view = df_full.copy()
 else:
     st.sidebar.info("Sem coluna de data reconhecida. Exibindo mês inteiro.")
+    df_view = df_full.copy()
 
 # ========== Filtro empresa ==========
-empresas = sorted(df['empresa'].dropna().unique())
+empresas = sorted(df_view['empresa'].dropna().unique())
 if len(empresas) == 0:
     st.warning("Não há dados para exibir. Verifique a planilha.")
     st.stop()
 
 empresa_selecionada = st.selectbox("Selecione a Marca:", empresas)
-df_filtrado = df[df['empresa'] == empresa_selecionada].copy()
+
+# df_filtrado: visão (mês inteiro OU dia) para cartões/tabelas/gráfico
+df_filtrado = df_view[df_view['empresa'] == empresa_selecionada].copy()
+# df_marca_all: histórico completo da marca (para heatmap/catch-up/ranking)
+df_marca_all = df_full[df_full["empresa"] == empresa_selecionada].copy()
 
 # ========== Helpers ==========
 def meta_marca_mes(marca: str) -> int:
@@ -257,7 +270,7 @@ st.pyplot(fig)
 st.markdown("---")
 st.markdown("## 🏢 Consolidado Geral - Total das 4 Marcas")
 
-agg_geral = df.groupby("empresa", dropna=False).agg(total=("total","sum"), rev=("revistorias","sum")).reset_index()
+agg_geral = df_view.groupby("empresa", dropna=False).agg(total=("total","sum"), rev=("revistorias","sum")).reset_index()
 real_total = int(agg_geral["total"].sum())
 rev_total = int(agg_geral["rev"].sum())
 liq_total = real_total - rev_total
@@ -297,9 +310,7 @@ st.markdown(
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
-df_marca_all = df[df["empresa"] == empresa_selecionada].copy()
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
-
 if datas_marca:
     last_date = datas_marca[-1]
     months_available = sorted({(d.year, d.month) for d in datas_marca})
@@ -426,7 +437,7 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 # ============ Ranking Diário Top/Bottom 5 (usa último dia útil anterior da unidade) ============
 st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
 
-# Data do ranking
+# Data do ranking (usa a escolhida; senão, última do mês com dados)
 if chosen_date and (isinstance(chosen_date, date) and chosen_date.year==ref_year and chosen_date.month==ref_month):
     rank_date = chosen_date
 else:
@@ -435,7 +446,7 @@ else:
 if rank_date is None:
     st.info("Ainda não há dados neste mês para montar o ranking.")
 else:
-    # Série diária por unidade (líquido) no mês
+    # Série diária por unidade (líquido) no mês - usa HISTÓRICO COMPLETO
     df_unit_daily = (df_marca_all
         .groupby(["unidade", "__data__"])
         .apply(lambda x: int(x["total"].sum() - x["revistorias"].sum()))
