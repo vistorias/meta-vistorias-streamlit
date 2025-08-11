@@ -79,7 +79,7 @@ if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
 # =========================
-# Guardar histórico completo (df_full) e visão filtrável (df_view)
+# Guardar histórico completo e visão filtrável
 # =========================
 df_full = df.copy()
 
@@ -304,7 +304,7 @@ st.markdown(
 )
 
 # =========================
-# 📅 Heatmap do Mês (Calendário) — Altair interativo
+# 📅 Heatmap do Mês (Calendário) — Altair robusto
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
@@ -345,27 +345,33 @@ for day in range(1, n_days + 1):
     d = date(ref_year, ref_month, day)
     liq = int(daily_liq.loc[daily_liq["__data__"] == d, "liq"].sum()) if len(daily_liq) else 0
     pct = (liq / meta_dia_base * 100) if meta_dia_base else 0
-    # grid: semana (0..5) e dia da semana (0..6, seg..dom)
-    grid_col = d.weekday()
-    grid_row = (day + first_weekday - 1) // 7
-    value = pct if metric_choice == "% da meta do dia" and d.weekday() < 5 else (liq if metric_choice == "Total Líquido" else None)
+    grid_col = d.weekday()                      # 0..6 seg..dom
+    grid_row = (day + first_weekday - 1) // 7   # 0..5
+    if metric_choice == "% da meta do dia":
+        value = pct if d.weekday() < 5 else np.nan
+        val_label_str = f"{pct:.0f}%" if d.weekday() < 5 else ""
+    else:
+        value = float(liq)
+        val_label_str = f"{liq}"
     records.append({
         "date": pd.to_datetime(d),
         "day": day,
         "dow": grid_col,
         "week": grid_row,
         "liq": liq,
-        "pct": pct if d.weekday() < 5 else None,
-        "value": value
+        "pct": pct if d.weekday() < 5 else np.nan,
+        "value": value,
+        "val_label_str": val_label_str
     })
 
 cal_df = pd.DataFrame.from_records(records)
 
-# heatmap
+# heatmap (retângulos)
 base = alt.Chart(cal_df).properties(width=700, height=320)
 
 heat = base.mark_rect().encode(
-    x=alt.X('dow:O', title='', axis=alt.Axis(values=[0,1,2,3,4,5,6], labelExpr='["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"][datum.value]')),
+    x=alt.X('dow:O', title='', axis=alt.Axis(values=[0,1,2,3,4,5,6],
+        labelExpr='["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"][datum.value]')),
     y=alt.Y('week:O', title='', sort='descending', axis=None),
     color=alt.Color('value:Q', title='%' if metric_choice == "% da meta do dia" else 'Líquido',
                     scale=alt.Scale(scheme='viridis')),
@@ -376,34 +382,20 @@ heat = base.mark_rect().encode(
     ]
 )
 
-labels = base.mark_text(baseline='middle', fontSize=12, color='black').encode(
-    x='dow:O',
-    y='week:O',
-    text=alt.condition(
-        alt.datum.value != None,
-        alt.value(''),
-        alt.value('')
-    )
+# rótulo: dia (em cima)
+labels_day = base.mark_text(baseline='middle', dy=-8, fontSize=12, color='black').encode(
+    x='dow:O', y='week:O', text='day:Q'
 )
 
-# texto com dia + opcionalmente o valor
+# rótulo: valor (embaixo), opcional
+chart = heat + labels_day
 if show_values:
-    text_expr = alt.expr.if_(alt.datum.value != None,
-                             alt.expr.concat(alt.datum.day, alt.value('\\n'),
-                                             alt.expr.if_(metric_choice == "% da meta do dia",
-                                                          alt.expr.format(alt.datum.pct, '.0f') + alt.value('%'),
-                                                          alt.expr.format(alt.datum.liq, '.0f'))),
-                             alt.datum.day)
-else:
-    text_expr = alt.datum.day
+    labels_val = base.mark_text(baseline='middle', dy=10, fontSize=11, color='black').encode(
+        x='dow:O', y='week:O', text='val_label_str:N'
+    )
+    chart = chart + labels_val
 
-labels = base.mark_text(baseline='middle', fontSize=12, color='black', lineBreak='\n').encode(
-    x='dow:O',
-    y='week:O',
-    text=text_expr
-)
-
-st.altair_chart(heat + labels, use_container_width=False)
+st.altair_chart(chart, use_container_width=False)
 
 # ============ Tabela de Meta Ajustada (Catch-up) ============
 st.markdown("<div class='section-title'>📋 Acompanhamento Diário com Meta Ajustada (Catch-up)</div>", unsafe_allow_html=True)
