@@ -428,7 +428,7 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
 
 # Data usada no ranking (se não estiver no modo diário, pega a última disponível no mês)
-if chosen_date and (isinstance(chosen_date, date) and chosen_date.year==ref_year and chosen_date.month==ref_month):
+if chosen_date and (isinstance(chosen_date, date) and chosen_date.year == ref_year and chosen_date.month == ref_month):
     rank_date = chosen_date
 else:
     rank_date = max(daily_series.index) if len(daily_series) else None
@@ -436,51 +436,71 @@ else:
 if rank_date is None:
     st.info("Ainda não há dados neste mês para montar o ranking.")
 else:
+    # último dia anterior no mesmo mês (pode ser útil ou fim de semana)
     prev_days = sorted([d for d in df_marca_all["__data__"].unique()
-                        if isinstance(d, date) and d < rank_date and d.month==ref_month and d.year==ref_year])
-    prev_date = prev_days[-1] if prev_days else None  # <-- correção de sintaxe
+                        if isinstance(d, date) and d < rank_date and d.month == ref_month and d.year == ref_year])
+    prev_date = prev_days[-1] if prev_days else None
 
+    # dados do dia e do dia anterior
     df_day = df_marca_all[df_marca_all["__data__"] == rank_date].copy()
     df_prev = df_marca_all[df_marca_all["__data__"] == prev_date].copy() if prev_date else pd.DataFrame(columns=df_marca_all.columns)
 
+    # agregações por unidade (líquido = total - rev)
     agg_day = df_day.groupby("unidade").apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).rename("liq").to_frame().reset_index()
     if prev_date:
         agg_prev = df_prev.groupby("unidade").apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).rename("liq_prev").to_frame().reset_index()
     else:
         agg_prev = pd.DataFrame(columns=["unidade", "liq_prev"])
 
+    # metas por unidade
     metas_u = pd.DataFrame(
         [(u, meta_unidade_mes(empresa_selecionada, u)) for u in agg_day["unidade"]],
-        columns=["unidade","meta_mes"]
+        columns=["unidade", "meta_mes"]
     )
+
+    # juntar e calcular métricas
     df_rank = agg_day.merge(metas_u, on="unidade", how="left").merge(agg_prev, on="unidade", how="left")
+    df_rank["liq_prev"] = df_rank["liq_prev"].fillna(0).astype(float)
     df_rank["meta_dia"] = df_rank["meta_mes"] / dias_uteis_total
 
-    # Se a data do ranking for sábado/domingo, meta do dia = 0 => não calcula %
-    if is_workday(rank_date):
-        df_rank["pct_hoje"] = df_rank.apply(lambda r: safe_div(r["liq"], r["meta_dia"]) * 100 if r["meta_dia"] else 0, axis=1)
-        df_rank["pct_ontem"] = df_rank.apply(lambda r: safe_div(r.get("liq_prev", 0), r["meta_dia"]) * 100 if r["meta_dia"] else 0, axis=1)
+    workday_rank = is_workday(rank_date)
+
+    if workday_rank:
+        # em dias úteis calculamos % e delta (com base 0 quando não houve ontem)
+        df_rank["pct_hoje"] = np.where(df_rank["meta_dia"] > 0, (df_rank["liq"] / df_rank["meta_dia"]) * 100, 0.0)
+        df_rank["pct_ontem"] = np.where(df_rank["meta_dia"] > 0, (df_rank["liq_prev"] / df_rank["meta_dia"]) * 100, 0.0)
+        df_rank["delta_pct"] = df_rank["pct_hoje"] - df_rank["pct_ontem"]
+        order_col = "pct_hoje"
     else:
+        # fim de semana: sem meta/%, ordena por líquido
         df_rank["pct_hoje"] = 0.0
         df_rank["pct_ontem"] = 0.0
-    df_rank["delta_pct"] = df_rank["pct_hoje"] - df_rank["pct_ontem"]
-    df_rank = df_rank.sort_values("pct_hoje", ascending=False)
+        df_rank["delta_pct"] = np.nan
+        order_col = "liq"
+
+    df_rank = df_rank.sort_values(order_col, ascending=False)
 
     col1, col2 = st.columns(2)
+
+    def fmt_delta(x):
+        if pd.isna(x):
+            return "—"
+        arrow = "⬆️" if x > 0 else ("⬇️" if x < 0 else "➡️")
+        return f"{arrow} {abs(x):.0f} pp"
+
     def render_rank(df_sub, title, container):
         with container:
             st.markdown(f"**{title} — {rank_date.strftime('%d/%m/%Y')}**")
             linhas = []
             for _, r in df_sub.iterrows():
-                arrow = "⬆️" if r["delta_pct"] > 0 else ("⬇️" if r["delta_pct"] < 0 else "➡️")
                 linhas.append({
                     "Unidade": r["unidade"],
-                    "% do Dia": (f"{r['pct_hoje']:.0f}%" if is_workday(rank_date) else "—"),
-                    "Δ vs Ontem": (f"{arrow} {abs(r['delta_pct']):.0f} pp" if is_workday(rank_date) else "—"),
+                    "% do Dia": f"{r['pct_hoje']:.0f}%" if workday_rank else "—",
+                    "Δ vs Ontem": fmt_delta(r["delta_pct"]) if workday_rank else "—",
                     "Líquido (Dia)": int(r["liq"]),
-                    "Meta do Dia": int(round(r["meta_dia"])) if (is_workday(rank_date) and r["meta_dia"]) else 0
+                    "Meta do Dia": int(round(r["meta_dia"])) if (workday_rank and r["meta_dia"] > 0) else 0
                 })
             st.dataframe(pd.DataFrame(linhas), use_container_width=True)
 
     render_rank(df_rank.head(5), "TOP 5", col1)
-    render_rank(df_rank.tail(5).sort_values("pct_hoje", ascending=True), "BOTTOM 5", col2)
+    render_rank(df_rank.tail(5).sort_values(order_col, ascending=True), "BOTTOM 5", col2)
