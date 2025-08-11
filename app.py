@@ -294,7 +294,7 @@ else:
             ("Meta Geral", meta_mes_geral), ("Total Geral", real_total), ("Total Revistorias", rev_total),
             ("Total Líquido", liq_total), ("Faltante", falt_geral),
             ("Necessidade/dia", int(safe_div(falt_geral, dias_uteis_restantes))),
-            ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendência", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
+            ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendencia", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
         ]
 
 st.markdown(
@@ -304,12 +304,12 @@ st.markdown(
 )
 
 # =========================
-# 📅 Heatmap do Mês (Calendário) — Altair (compatível)
+# 📅 Heatmap do Mês (Calendário) — Altair (com tooltip)
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
-# tamanho do quadro (ajuste à vontade)
+# tamanho do quadro (o “bom” que você gostou)
 HEAT_W, HEAT_H = 980, 420
 
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
@@ -340,29 +340,34 @@ else:
     last_data_day = None
 
 meta_dia_base = (metas_gerais.get(empresa_selecionada, 0) / dias_uteis_total) if dias_uteis_total else 0
-metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric_altair")
-show_values = st.checkbox("Mostrar valor dentro das células", value=False, key="show_values_altair")
+metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
+show_values = st.checkbox("Mostrar valor dentro das células", value=False, key="heatmap_labels")
 
-# construir dataframe do calendário
+# montar a grade do mês (segunda=0 … domingo=6)
 first_weekday, n_days = calendar.monthrange(ref_year, ref_month)
 liq_map = daily_liq.set_index("__data__")["liq"].to_dict()
 
 records = []
+ord_dow = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"]
+
 for day in range(1, n_days + 1):
     d = date(ref_year, ref_month, day)
-    # futuros (sem dado) ficam em branco
+
+    # dias futuros (sem dado) em branco
     if (last_data_day is None) or (d > last_data_day) or (d not in liq_map):
         liq = np.nan
     else:
         liq = float(liq_map[d])
+
     pct = (liq / meta_dia_base * 100) if (not np.isnan(liq) and meta_dia_base) else np.nan
 
-    grid_col = d.weekday()                      # 0..6 seg..dom
-    grid_row = (day + first_weekday - 1) // 7   # 0..5
+    dow_idx = d.weekday()                           # 0..6 (seg..dom)
+    dow_label = ord_dow[dow_idx]
+    week_index = (day + first_weekday - 1) // 7     # mesma regra do matplotlib
 
     if metric_choice == "% da meta do dia":
-        value = pct if (not np.isnan(pct) and d.weekday() < 5) else np.nan
-        val_label_str = f"{pct:.0f}%" if (show_values and not np.isnan(pct) and d.weekday() < 5) else ""
+        value = pct if (not np.isnan(pct) and dow_idx < 5) else np.nan  # sáb/dom em branco
+        val_label_str = f"{pct:.0f}%" if (show_values and not np.isnan(pct) and dow_idx < 5) else ""
     else:
         value = liq if not np.isnan(liq) else np.nan
         val_label_str = f"{int(liq)}" if (show_values and not np.isnan(liq)) else ""
@@ -370,9 +375,8 @@ for day in range(1, n_days + 1):
     records.append({
         "date": pd.to_datetime(d),
         "day": day,
-        "dow": grid_col,
-        "dow_name": ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"][grid_col],
-        "week_index": grid_row,
+        "dow_label": dow_label,
+        "week_index": week_index,
         "liq": liq,
         "pct": pct,
         "value": value,
@@ -381,9 +385,10 @@ for day in range(1, n_days + 1):
 
 cal_df = pd.DataFrame.from_records(records)
 
-# heatmap (retângulos)
+# Chart
 base = alt.Chart(cal_df).properties(width=HEAT_W, height=HEAT_H)
 
+# escala da cor
 color_scale = alt.Scale(scheme='viridis')
 color_title = 'Líquido'
 if metric_choice == "% da meta do dia":
@@ -391,25 +396,25 @@ if metric_choice == "% da meta do dia":
     color_title = '%'
 
 heat = base.mark_rect().encode(
-    x=alt.X('dow_name:N', title='', sort=['Seg','Ter','Qua','Qui','Sex','Sáb','Dom']),
-    y=alt.Y('week_index:O', title='', sort='descending', axis=None),
+    x=alt.X('dow_label:N', title='', sort=ord_dow),
+    y=alt.Y('week_index:O', title='', sort=alt.SortField('week_index', order='ascending'), axis=None),
     color=alt.Color('value:Q', title=color_title, scale=color_scale),
-    tooltip=[alt.Tooltip('date:T', title='Data'),
-             alt.Tooltip('liq:Q', title='Líquido', format='.0f'),
-             alt.Tooltip('pct:Q', title='% Meta', format='.0f')]
+    tooltip=[
+        alt.Tooltip('date:T', title='Data'),
+        alt.Tooltip('liq:Q',  title='Líquido', format='.0f'),
+        alt.Tooltip('pct:Q',  title='% Meta',  format='.0f')
+    ]
 )
 
-# rótulo dia (em cima)
+# rótulos (dia e, opcional, valor)
 labels_day = base.mark_text(baseline='middle', dy=-8, fontSize=12, color='black').encode(
-    x='dow_name:N', y='week_index:O', text='day:Q'
+    x='dow_label:N', y='week_index:O', text='day:Q'
 )
 
 chart = heat + labels_day
-
-# rótulo valor (embaixo) opcional
 if show_values:
     labels_val = base.mark_text(baseline='middle', dy=10, fontSize=11, color='black').encode(
-        x='dow_name:N', y='week_index:O', text='val_label_str:N'
+        x='dow_label:N', y='week_index:O', text='val_label_str:N'
     )
     chart = chart + labels_val
 
