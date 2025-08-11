@@ -305,11 +305,14 @@ st.markdown(
 )
 
 # =========================
-# 📅 Heatmap do Mês (Calendário) — % ignora sábado
+# 📅 Heatmap do Mês (Calendário) — interativo (Plotly)
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
+import plotly.graph_objects as go
+
+# histórico completo da marca (já temos df_marca_all definido acima)
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
 if datas_marca:
     last_date = datas_marca[-1]
@@ -337,45 +340,101 @@ else:
 
 meta_dia_base = (metas_gerais.get(empresa_selecionada, 0) / dias_uteis_total) if dias_uteis_total else 0
 metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
+show_values = st.checkbox("Mostrar valor dentro das células", value=False, help="Exibe % ou Líquido junto do número do dia.")
 
+# --- construir grade 6x7 (semanas x dias) ---
 first_weekday, n_days = calendar.monthrange(ref_year, ref_month)
-values = np.full((6, 7), np.nan)
-labels = np.full((6, 7), "", dtype=object)
 
-day_to_val = {}
-for _, row in daily_liq.iterrows():
-    d = row["__data__"]
-    if metric_choice == "% da meta do dia":
-        if is_workday(d):  # sábado/domingo não tem % de meta
-            val = (row["liq"] / meta_dia_base) * 100 if meta_dia_base else np.nan
-        else:
-            val = np.nan
-    else:
-        val = row["liq"]
-    day_to_val[int(d.day)] = val
+# eixos numéricos (0..6/0..5) e legendas das categorias
+x_vals = list(range(7))
+y_vals = list(range(6))
+x_ticktext = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"]
 
-r, c = 0, first_weekday
+z = np.full((6, 7), np.nan)          # valores que definem a cor
+text_grid = np.full((6, 7), "", dtype=object)  # texto dentro da célula (dia e, opcionalmente, valor)
+liq_grid = np.full((6, 7), np.nan)   # líquido do dia (para tooltip)
+pct_grid = np.full((6, 7), np.nan)   # % da meta (para tooltip)
+
+# mapear dia -> líquido
+liq_map = {int(d.day): int(v) for d, v in zip(daily_liq["__data__"], daily_liq["liq"])}
+
+r, c = 0, first_weekday  # posição inicial
 for day in range(1, n_days + 1):
     if c > 6:
         r += 1; c = 0
-    labels[r, c] = str(day)
-    values[r, c] = day_to_val.get(day, np.nan)
+    d = date(ref_year, ref_month, day)
+    liq_val = liq_map.get(day, np.nan)
+    pct_val = (liq_val / meta_dia_base * 100) if (pd.notna(liq_val) and meta_dia_base) else np.nan
+
+    # cor: em modo "% da meta" não colorimos sábados/domingos
+    if metric_choice == "% da meta do dia":
+        z[r, c] = pct_val if d.weekday() < 5 else np.nan
+    else:
+        z[r, c] = liq_val
+
+    liq_grid[r, c] = liq_val
+    pct_grid[r, c] = pct_val
+
+    # texto mostrado dentro da célula
+    if show_values:
+        if metric_choice == "% da meta do dia" and pd.notna(pct_val) and d.weekday() < 5:
+            text_grid[r, c] = f"{day}\n{pct_val:.0f}%"
+        elif metric_choice == "Total Líquido" and pd.notna(liq_val):
+            text_grid[r, c] = f"{day}\n{int(liq_val)}"
+        else:
+            text_grid[r, c] = f"{day}"
+    else:
+        text_grid[r, c] = f"{day}"
+
     c += 1
 
-finite_vals = values[~np.isnan(values)]
-vmin, vmax = (0, 1) if finite_vals.size == 0 else (np.nanmin(values), np.nanmax(values))
+# faixa de cores segura (ignora NaN)
+finite = z[np.isfinite(z)]
+zmin = float(np.min(finite)) if finite.size else 0.0
+zmax = float(np.max(finite)) if finite.size else 1.0
 
-fig_h, ax_h = plt.subplots(figsize=(8, 5))
-im = ax_h.imshow(values, aspect="equal", vmin=vmin, vmax=vmax)
-for i in range(values.shape[0]):
-    for j in range(values.shape[1]):
-        if labels[i, j] != "":
-            ax_h.text(j, i, labels[i, j], ha="center", va="center", fontsize=10, color="black")
-ax_h.set_xticks(range(7)); ax_h.set_xticklabels(["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"])
-ax_h.set_yticks([])
-ax_h.set_title(f"{calendar.month_name[ref_month]} {ref_year} — {metric_choice}")
-plt.colorbar(im, ax=ax_h, fraction=0.046, pad=0.04)
-st.pyplot(fig_h)
+# dados extra para tooltip (liq + %)
+custom = np.dstack([liq_grid, pct_grid])  # (6,7,2)
+
+colorbar_title = "%" if metric_choice == "% da meta do dia" else "Líquido"
+
+fig = go.Figure(
+    data=go.Heatmap(
+        z=z,
+        x=x_vals, y=y_vals,
+        text=text_grid,
+        texttemplate="%{text}",            # mostra o texto dentro da célula
+        textfont=dict(color="black", size=12),
+        customdata=custom,
+        hovertemplate=(
+            "Dia %{text.split('<br>')[0]|%{text}}<br>"  # garante mostrar o número do dia
+            "Líquido: %{customdata[0]:.0f}<br>"
+            "% Meta: %{customdata[1]:.0f}%<extra></extra>"
+        ),
+        colorscale="Viridis",
+        zmin=zmin, zmax=zmax,
+        colorbar=dict(title=colorbar_title)
+    )
+)
+
+# eixos categóricos “bonitos” e tamanho menor do quadro
+fig.update_xaxes(
+    tickmode="array", tickvals=x_vals, ticktext=x_ticktext,
+    showgrid=False, zeroline=False
+)
+fig.update_yaxes(
+    tickmode="array", tickvals=y_vals, ticktext=[f"Sem {i+1}" for i in y_vals],
+    autorange="reversed", showgrid=False, zeroline=False, showticklabels=False
+)
+
+# tamanho reduzido e margens apertadas
+fig.update_layout(
+    width=820, height=420,            # <<< ajuste de tamanho do quadro
+    margin=dict(l=10, r=10, t=60, b=10),
+    title=f"{calendar.month_name[ref_month]} {ref_year} — {metric_choice}"
+)
+
+st.plotly_chart(fig, use_container_width=False)
 
 # ============ Tabela de Meta Ajustada (Catch-up) — sábado sem meta ============
 st.markdown("<div class='section-title'>📋 Acompanhamento Diário com Meta Ajustada (Catch-up)</div>", unsafe_allow_html=True)
