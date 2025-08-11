@@ -62,12 +62,12 @@ else:
 
 # ========== Metas ==========
 metas_unidades = {
-    "TOKYO": {"BARRA DO CORDA": 650, "CHAPADINHA": 550, "SANTA INÊS": 2200, "SÃO JOÃO DOS PATOS": 435, "SÃO JOSÉ DE RIBAMAR": 2000},
-    "STARCHECK": {"BACABAL": 1640, "BALSAS": 1505, "CAXIAS": 560, "CODÓ": 380, "PINHEIRO": 900, "SÃO LUÍS": 3200},
-    "LOG": {"AÇAILÂNDIA": 1100, "CAROLINA": 135, "PRESIDENTE DUTRA": 875, "SÃO LUÍS": 4240, "TIMON": 980},
-    "VELOX": {"ESTREITO": 463, "GRAJAÚ": 500, "IMPERATRIZ": 3350, "PEDREIRAS": 600, "SÃO LUÍS": 1850}
+    "TOKYO": {"BARRA DO CORDA": 677, "CHAPADINHA": 573, "SANTA INÊS": 2291, "SÃO JOÃO DOS PATOS": 453, "SÃO JOSÉ DE RIBAMAR": 2083},
+    "STARCHECK": {"BACABAL": 1658, "BALSAS": 1722, "CAXIAS": 604, "CODÓ": 446, "PINHEIRO": 917, "SÃO LUÍS": 3272},
+    "LOG": {"AÇAILÂNDIA": 1185, "CAROLINA": 126, "PRESIDENTE DUTRA": 926, "SÃO LUÍS": 4455, "TIMON": 896},
+    "VELOX": {"ESTREITO": 482, "GRAJAÚ": 521, "IMPERATRIZ": 3488, "PEDREIRAS": 625, "SÃO LUÍS": 1926}
 }
-metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
+metas_gerais = {"TOKYO": 6076, "STARCHECK": 8620, "LOG": 7588, "VELOX": 7043}
 
 # correção de possível digitação de cidade
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
