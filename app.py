@@ -70,7 +70,7 @@ metas_unidades = {
 }
 metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
 
-# correção eventual
+# correção eventual de digitação
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
@@ -121,7 +121,7 @@ def safe_div(a, b): return (a / b) if b else 0
 
 def is_workday(d: date) -> bool:
     """Dias úteis considerados: SEG–SEX. Sábado e domingo fora da meta."""
-    return d.weekday() < 5  # 0=Seg ... 4=Sex, 5=Sáb, 6=Dom
+    return d.weekday() < 5  # 0=Seg ... 4=Sex
 
 # ========== Consolidado (marca) ==========
 meta_mes_marca = meta_marca_mes(empresa_selecionada)
@@ -393,7 +393,7 @@ month_end = date(ref_year, ref_month, calendar.monthrange(ref_year, ref_month)[1
 all_days = pd.date_range(month_start, month_end, freq="D")
 workdays_dates = [ts.date() for ts in all_days if is_workday(ts.date())]
 
-# Mapa: em cada dia útil, quantos dias úteis (incluindo hoje) ainda faltam
+# Mapa de dias úteis restantes (inclui o dia atual)
 remaining_map = {}
 for idx, wd in enumerate(workdays_dates):
     remaining_map[wd] = len(workdays_dates) - idx
@@ -402,12 +402,10 @@ rows = []
 acum_real = 0
 for d, liq in daily_series.items():
     if d in remaining_map:
-        # Dia útil: distribui a meta pelos dias úteis restantes (inclui hoje)
         dias_restantes_incl_hoje = remaining_map[d]
         meta_dia_ajustada = safe_div((meta_mes_ref - acum_real), dias_restantes_incl_hoje)
     else:
-        # Sábado/Domingo: sem meta do dia
-        meta_dia_ajustada = 0
+        meta_dia_ajustada = 0  # sábado/domingo sem meta
 
     diff_dia = liq - meta_dia_ajustada
     acum_real += liq
@@ -429,6 +427,7 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 # ============ Ranking Diário Top/Bottom 5 ============
 st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
 
+# Data usada no ranking (se não estiver no modo diário, pega a última disponível no mês)
 if chosen_date and (isinstance(chosen_date, date) and chosen_date.year==ref_year and chosen_date.month==ref_month):
     rank_date = chosen_date
 else:
@@ -439,7 +438,7 @@ if rank_date is None:
 else:
     prev_days = sorted([d for d in df_marca_all["__data__"].unique()
                         if isinstance(d, date) and d < rank_date and d.month==ref_month and d.year==ref_year])
-    prev_date = prev_days[-1] if prev_date := (prev_days[-1] if prev_days else None) else None
+    prev_date = prev_days[-1] if prev_days else None  # <-- correção de sintaxe
 
     df_day = df_marca_all[df_marca_all["__data__"] == rank_date].copy()
     df_prev = df_marca_all[df_marca_all["__data__"] == prev_date].copy() if prev_date else pd.DataFrame(columns=df_marca_all.columns)
