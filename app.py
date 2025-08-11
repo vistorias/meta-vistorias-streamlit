@@ -312,7 +312,7 @@ st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>
 
 import plotly.graph_objects as go
 
-# histórico completo da marca (já temos df_marca_all definido acima)
+# histórico completo da marca (df_marca_all já existe acima)
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
 if datas_marca:
     last_date = datas_marca[-1]
@@ -340,25 +340,23 @@ else:
 
 meta_dia_base = (metas_gerais.get(empresa_selecionada, 0) / dias_uteis_total) if dias_uteis_total else 0
 metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
-show_values = st.checkbox("Mostrar valor dentro das células", value=False, help="Exibe % ou Líquido junto do número do dia.")
+show_values = st.checkbox("Mostrar valor dentro das células", value=False)
 
-# --- construir grade 6x7 (semanas x dias) ---
+# grade 6x7
 first_weekday, n_days = calendar.monthrange(ref_year, ref_month)
-
-# eixos numéricos (0..6/0..5) e legendas das categorias
 x_vals = list(range(7))
 y_vals = list(range(6))
 x_ticktext = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"]
 
-z = np.full((6, 7), np.nan)          # valores que definem a cor
-text_grid = np.full((6, 7), "", dtype=object)  # texto dentro da célula (dia e, opcionalmente, valor)
-liq_grid = np.full((6, 7), np.nan)   # líquido do dia (para tooltip)
-pct_grid = np.full((6, 7), np.nan)   # % da meta (para tooltip)
+z = np.full((6, 7), np.nan)
+text_grid = np.full((6, 7), "", dtype=object)
+day_grid = np.full((6, 7), np.nan)
+liq_grid = np.full((6, 7), np.nan)
+pct_grid = np.full((6, 7), np.nan)
 
-# mapear dia -> líquido
 liq_map = {int(d.day): int(v) for d, v in zip(daily_liq["__data__"], daily_liq["liq"])}
 
-r, c = 0, first_weekday  # posição inicial
+r, c = 0, first_weekday
 for day in range(1, n_days + 1):
     if c > 6:
         r += 1; c = 0
@@ -366,21 +364,22 @@ for day in range(1, n_days + 1):
     liq_val = liq_map.get(day, np.nan)
     pct_val = (liq_val / meta_dia_base * 100) if (pd.notna(liq_val) and meta_dia_base) else np.nan
 
-    # cor: em modo "% da meta" não colorimos sábados/domingos
+    # cor
     if metric_choice == "% da meta do dia":
-        z[r, c] = pct_val if d.weekday() < 5 else np.nan
+        z[r, c] = pct_val if d.weekday() < 5 else np.nan  # sem % em sáb/dom
     else:
         z[r, c] = liq_val
 
+    day_grid[r, c] = day
     liq_grid[r, c] = liq_val
     pct_grid[r, c] = pct_val
 
-    # texto mostrado dentro da célula
+    # texto interno
     if show_values:
         if metric_choice == "% da meta do dia" and pd.notna(pct_val) and d.weekday() < 5:
-            text_grid[r, c] = f"{day}\n{pct_val:.0f}%"
+            text_grid[r, c] = f"{day}<br>{pct_val:.0f}%"
         elif metric_choice == "Total Líquido" and pd.notna(liq_val):
-            text_grid[r, c] = f"{day}\n{int(liq_val)}"
+            text_grid[r, c] = f"{day}<br>{int(liq_val)}"
         else:
             text_grid[r, c] = f"{day}"
     else:
@@ -388,54 +387,40 @@ for day in range(1, n_days + 1):
 
     c += 1
 
-# faixa de cores segura (ignora NaN)
 finite = z[np.isfinite(z)]
 zmin = float(np.min(finite)) if finite.size else 0.0
 zmax = float(np.max(finite)) if finite.size else 1.0
-
-# dados extra para tooltip (liq + %)
-custom = np.dstack([liq_grid, pct_grid])  # (6,7,2)
-
 colorbar_title = "%" if metric_choice == "% da meta do dia" else "Líquido"
+
+# enviamos dia, líquido, % como customdata → tooltip seguro
+custom = np.dstack([day_grid, liq_grid, pct_grid])
 
 fig = go.Figure(
     data=go.Heatmap(
         z=z,
         x=x_vals, y=y_vals,
         text=text_grid,
-        texttemplate="%{text}",            # mostra o texto dentro da célula
+        texttemplate="%{text}",
         textfont=dict(color="black", size=12),
         customdata=custom,
-        hovertemplate=(
-            "Dia %{text.split('<br>')[0]|%{text}}<br>"  # garante mostrar o número do dia
-            "Líquido: %{customdata[0]:.0f}<br>"
-            "% Meta: %{customdata[1]:.0f}%<extra></extra>"
-        ),
+        hovertemplate="Dia %{customdata[0]:.0f}<br>Líquido: %{customdata[1]:.0f}<br>% Meta: %{customdata[2]:.0f}%<extra></extra>",
         colorscale="Viridis",
         zmin=zmin, zmax=zmax,
         colorbar=dict(title=colorbar_title)
     )
 )
 
-# eixos categóricos “bonitos” e tamanho menor do quadro
-fig.update_xaxes(
-    tickmode="array", tickvals=x_vals, ticktext=x_ticktext,
-    showgrid=False, zeroline=False
-)
-fig.update_yaxes(
-    tickmode="array", tickvals=y_vals, ticktext=[f"Sem {i+1}" for i in y_vals],
-    autorange="reversed", showgrid=False, zeroline=False, showticklabels=False
-)
+fig.update_xaxes(tickmode="array", tickvals=x_vals, ticktext=x_ticktext, showgrid=False, zeroline=False)
+fig.update_yaxes(tickmode="array", tickvals=y_vals, ticktext=[""]*6, autorange="reversed", showgrid=False, zeroline=False, showticklabels=False)
 
-# tamanho reduzido e margens apertadas
+# tamanho reduzido (ajuste aqui se quiser ainda menor)
 fig.update_layout(
-    width=820, height=420,            # <<< ajuste de tamanho do quadro
+    width=780, height=380,
     margin=dict(l=10, r=10, t=60, b=10),
     title=f"{calendar.month_name[ref_month]} {ref_year} — {metric_choice}"
 )
 
 st.plotly_chart(fig, use_container_width=False)
-
 # ============ Tabela de Meta Ajustada (Catch-up) — sábado sem meta ============
 st.markdown("<div class='section-title'>📋 Acompanhamento Diário com Meta Ajustada (Catch-up)</div>", unsafe_allow_html=True)
 
