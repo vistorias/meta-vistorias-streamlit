@@ -69,7 +69,8 @@ metas_unidades = {
     "VELOX": {"ESTREITO": 463, "GRAJAÚ": 500, "IMPERATRIZ": 3350, "PEDREIRAS": 600, "SÃO LUÍS": 1850}
 }
 metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
-# correção eventual
+
+# correção eventual de digitação
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
@@ -142,7 +143,7 @@ if daily_mode:
 else:
     faltante_marca = max(meta_mes_marca - total_liq_marca, 0)
     media_diaria = safe_div(total_liq_marca, dias_uteis_passados)
-    projecao_marca_total = total_liq_marca + media_diaria * dias_uteis_restantes  # forma "realizado + restante"
+    projecao_marca_total = total_liq_marca + media_diaria * dias_uteis_restantes  # realizado + restante
     tendencia = safe_div(projecao_marca_total, meta_mes_marca) * 100
     cards = [
         ("Meta da Marca", meta_mes_marca),
@@ -289,70 +290,81 @@ st.markdown(
 )
 
 # =========================
-#   VISUALIZAÇÕES NOVAS
+# 📅 Heatmap do Mês (Calendário) — CORRIGIDO
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
-# Determinar mês/ano de referência pelo último dado disponível da marca
+# Dados da marca ao longo do tempo (sem filtro diário)
 df_marca_all = df[df["empresa"] == empresa_selecionada].copy()
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
+
 if datas_marca:
     last_date = datas_marca[-1]
     months_available = sorted({(d.year, d.month) for d in datas_marca})
     month_labels = [f"{y}-{m:02d}" for (y, m) in months_available]
-    default_month_idx = month_labels.index(f"{last_date.year}-{last_date.month:02d}") if f"{last_date.year}-{last_date.month:02d}" in month_labels else len(month_labels)-1
-    month_choice = st.selectbox("Mês de referência (marca)", options=month_labels, index=default_month_idx, key="mes_heatmap")
+    default_month = f"{last_date.year}-{last_date.month:02d}"
+    default_idx = month_labels.index(default_month) if default_month in month_labels else len(month_labels)-1
+    month_choice = st.selectbox("Mês de referência (marca)", options=month_labels, index=default_idx, key="mes_heatmap")
     ref_year, ref_month = map(int, month_choice.split("-"))
 else:
     today = date.today()
     ref_year, ref_month = today.year, today.month
 
-# Agregar diário (líquido) da marca no mês escolhido
-def to_date(d): 
-    return d if isinstance(d, date) else d.date()
+# Filtra o mês escolhido
+mask_month = df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month)
+df_month = df_marca_all[mask_month].copy()
 
-df_month = df_marca_all[(df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year==ref_year and d.month==ref_month))]
-daily_liq = df_month.groupby("__data__", as_index=False).apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).reset_index()
-daily_liq.columns = ["__data__", "liq"]
+# Agrega diário (Líquido = total - revistorias) — robusto
+if len(df_month) > 0:
+    tmp = (df_month.groupby("__data__", as_index=False)
+                  .agg(total=("total", "sum"),
+                       rev=("revistorias", "sum")))
+    tmp["liq"] = (tmp["total"] - tmp["rev"]).astype(int)
+    daily_liq = tmp[["__data__", "liq"]]
+else:
+    daily_liq = pd.DataFrame(columns=["__data__", "liq"])
 
-# valor de meta do dia (base)
-meta_dia_base = safe_div(meta_marca_mes(empresa_selecionada), dias_uteis_total)
+# Base para cor: % da meta do dia ou Total Líquido
+meta_dia_base = (metas_gerais.get(empresa_selecionada, 0) / dias_uteis_total) if dias_uteis_total else 0
 metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
 
-# Construir matriz calendário (6x7)
-first_weekday, n_days = calendar.monthrange(ref_year, ref_month)  # weekday: Monday=0 .. Sunday=6
-values = np.full((6,7), np.nan)  # usaremos nan para dias fora do mês
-labels = np.full((6,7), "", dtype=object)
+# Monta matriz 6x7 (calendário)
+first_weekday, n_days = calendar.monthrange(ref_year, ref_month)  # Monday=0..Sunday=6
+values = np.full((6, 7), np.nan)
+labels = np.full((6, 7), "", dtype=object)
 
 # Mapear valores por dia
 day_to_val = {}
 for _, row in daily_liq.iterrows():
     d = row["__data__"]
-    if metric_choice == "% da meta do dia":
-        val = safe_div(row["liq"], meta_dia_base) * 100 if meta_dia_base else 0
+    if metric_choice == "% da meta do dia" and meta_dia_base:
+        val = (row["liq"] / meta_dia_base) * 100
     else:
         val = row["liq"]
-    day_to_val[d.day] = val
+    day_to_val[int(d.day)] = val
 
-row = 0; col = first_weekday
-for day in range(1, n_days+1):
-    if col > 6:
-        row += 1; col = 0
-    labels[row, col] = str(day)
-    values[row, col] = day_to_val.get(day, np.nan)
-    col += 1
+r, c = 0, first_weekday
+for day in range(1, n_days + 1):
+    if c > 6:
+        r += 1; c = 0
+    labels[r, c] = str(day)
+    values[r, c] = day_to_val.get(day, np.nan)
+    c += 1
 
-# Plot heatmap
+# Faixas de cor robustas (evita erro quando tudo é NaN)
+finite_vals = values[~np.isnan(values)]
+vmin, vmax = (0, 1) if finite_vals.size == 0 else (np.nanmin(values), np.nanmax(values))
+
 fig_h, ax_h = plt.subplots(figsize=(8, 5))
-im = ax_h.imshow(values, aspect='equal', cmap="YlOrRd", vmin=np.nanmin(values), vmax=np.nanmax(values))
+im = ax_h.imshow(values, aspect="equal", vmin=vmin, vmax=vmax)
 for i in range(values.shape[0]):
     for j in range(values.shape[1]):
         if labels[i, j] != "":
-            txt = labels[i, j]
-            ax_h.text(j, i, txt, ha="center", va="center", fontsize=10, color="black")
+            ax_h.text(j, i, labels[i, j], ha="center", va="center", fontsize=10, color="black")
 ax_h.set_xticks(range(7)); ax_h.set_xticklabels(["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"])
-ax_h.set_yticks([]); ax_h.set_title(f"{calendar.month_name[ref_month]} {ref_year} — {metric_choice}")
+ax_h.set_yticks([])
+ax_h.set_title(f"{calendar.month_name[ref_month]} {ref_year} — {metric_choice}")
 plt.colorbar(im, ax=ax_h, fraction=0.046, pad=0.04)
 st.pyplot(fig_h)
 
@@ -364,8 +376,8 @@ unidades_marca = ["(Consolidado da Marca)"] + sorted(df_marca_all["unidade"].dro
 un_sel = st.selectbox("Unidade", options=unidades_marca, index=0, key="un_meta_tab")
 
 # Usar o mesmo mês do heatmap para a tabela
-mask_month = df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year==ref_year and d.month==ref_month)
-df_month_brand = df_marca_all[mask_month].copy()
+mask_month_brand = df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year==ref_year and d.month==ref_month)
+df_month_brand = df_marca_all[mask_month_brand].copy()
 
 if un_sel != "(Consolidado da Marca)":
     df_month_brand = df_month_brand[df_month_brand["unidade"] == un_sel]
@@ -407,7 +419,7 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
 
 # Escolher a data para o ranking (se não estiver em modo diário, usa a última do mês)
-if chosen_date and (chosen_date.year==ref_year and chosen_date.month==ref_month):
+if chosen_date and (isinstance(chosen_date, date) and chosen_date.year==ref_year and chosen_date.month==ref_month):
     rank_date = chosen_date
 else:
     rank_date = max(daily_series.index) if len(daily_series) else None
@@ -416,7 +428,8 @@ if rank_date is None:
     st.info("Ainda não há dados neste mês para montar o ranking.")
 else:
     # dia anterior disponível
-    prev_days = sorted([d for d in df_marca_all["__data__"].unique() if isinstance(d, date) and d < rank_date and d.month==ref_month and d.year==ref_year])
+    prev_days = sorted([d for d in df_marca_all["__data__"].unique()
+                        if isinstance(d, date) and d < rank_date and d.month==ref_month and d.year==ref_year])
     prev_date = prev_days[-1] if prev_days else None
 
     # dataframe do dia e do dia anterior
