@@ -14,7 +14,7 @@ st.title("📊 Acompanhamento de Meta Mensal - Vistorias")
 st.markdown("""
 <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
   <h4 style="color: #cc3300; margin: 0;">👋 Bem-vindo(a) ao Painel de Acompanhamento de Metas!</h4>
-  <p style="margin: 5px 0 0 0;">Acompanhe a performance por mês ou por dia usando o filtro à esquerda. Abaixo, veja também o <b>calendário (heatmap)</b>, a <b>tabela com meta ajustada</b> e o <b>ranking diário</b>.</p>
+  <p style="margin: 5px 0 0 0;">Acompanhe a performance por mês ou por dia usando o filtro à esquerda. Veja também o <b>calendário (heatmap)</b>, a <b>tabela com meta ajustada</b> e o <b>ranking diário</b>.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -70,7 +70,7 @@ metas_unidades = {
 }
 metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
 
-# correção eventual de digitação
+# correção eventual
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
@@ -117,8 +117,11 @@ def meta_marca_mes(marca: str) -> int:
 def meta_unidade_mes(marca: str, unidade: str) -> int:
     return int(metas_unidades.get(marca, {}).get(unidade, 0))
 
-def safe_div(a, b):
-    return (a / b) if b else 0
+def safe_div(a, b): return (a / b) if b else 0
+
+def is_workday(d: date) -> bool:
+    """Dias úteis considerados: SEG–SEX. Sábado e domingo fora da meta."""
+    return d.weekday() < 5  # 0=Seg ... 4=Sex, 5=Sáb, 6=Dom
 
 # ========== Consolidado (marca) ==========
 meta_mes_marca = meta_marca_mes(empresa_selecionada)
@@ -290,12 +293,11 @@ st.markdown(
 )
 
 # =========================
-# 📅 Heatmap do Mês (Calendário) — CORRIGIDO
+# 📅 Heatmap do Mês (Calendário) — % ignora sábado
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
-# Dados da marca ao longo do tempo (sem filtro diário)
 df_marca_all = df[df["empresa"] == empresa_selecionada].copy()
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
 
@@ -311,11 +313,9 @@ else:
     today = date.today()
     ref_year, ref_month = today.year, today.month
 
-# Filtra o mês escolhido
 mask_month = df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month)
 df_month = df_marca_all[mask_month].copy()
 
-# Agrega diário (Líquido = total - revistorias) — robusto
 if len(df_month) > 0:
     tmp = (df_month.groupby("__data__", as_index=False)
                   .agg(total=("total", "sum"),
@@ -325,21 +325,21 @@ if len(df_month) > 0:
 else:
     daily_liq = pd.DataFrame(columns=["__data__", "liq"])
 
-# Base para cor: % da meta do dia ou Total Líquido
 meta_dia_base = (metas_gerais.get(empresa_selecionada, 0) / dias_uteis_total) if dias_uteis_total else 0
 metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
 
-# Monta matriz 6x7 (calendário)
-first_weekday, n_days = calendar.monthrange(ref_year, ref_month)  # Monday=0..Sunday=6
+first_weekday, n_days = calendar.monthrange(ref_year, ref_month)
 values = np.full((6, 7), np.nan)
 labels = np.full((6, 7), "", dtype=object)
 
-# Mapear valores por dia
 day_to_val = {}
 for _, row in daily_liq.iterrows():
     d = row["__data__"]
-    if metric_choice == "% da meta do dia" and meta_dia_base:
-        val = (row["liq"] / meta_dia_base) * 100
+    if metric_choice == "% da meta do dia":
+        if is_workday(d):  # sábado/domingo não tem % de meta
+            val = (row["liq"] / meta_dia_base) * 100 if meta_dia_base else np.nan
+        else:
+            val = np.nan
     else:
         val = row["liq"]
     day_to_val[int(d.day)] = val
@@ -352,7 +352,6 @@ for day in range(1, n_days + 1):
     values[r, c] = day_to_val.get(day, np.nan)
     c += 1
 
-# Faixas de cor robustas (evita erro quando tudo é NaN)
 finite_vals = values[~np.isnan(values)]
 vmin, vmax = (0, 1) if finite_vals.size == 0 else (np.nanmin(values), np.nanmax(values))
 
@@ -368,17 +367,14 @@ ax_h.set_title(f"{calendar.month_name[ref_month]} {ref_year} — {metric_choice}
 plt.colorbar(im, ax=ax_h, fraction=0.046, pad=0.04)
 st.pyplot(fig_h)
 
-# ============ Tabela de Meta Ajustada (Catch-up) ============
+# ============ Tabela de Meta Ajustada (Catch-up) — sábado sem meta ============
 st.markdown("<div class='section-title'>📋 Acompanhamento Diário com Meta Ajustada (Catch-up)</div>", unsafe_allow_html=True)
 
-# Escolher a unidade (ou consolidado da marca)
 unidades_marca = ["(Consolidado da Marca)"] + sorted(df_marca_all["unidade"].dropna().unique().tolist())
 un_sel = st.selectbox("Unidade", options=unidades_marca, index=0, key="un_meta_tab")
 
-# Usar o mesmo mês do heatmap para a tabela
 mask_month_brand = df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year==ref_year and d.month==ref_month)
 df_month_brand = df_marca_all[mask_month_brand].copy()
-
 if un_sel != "(Consolidado da Marca)":
     df_month_brand = df_month_brand[df_month_brand["unidade"] == un_sel]
 
@@ -389,19 +385,34 @@ daily_series = (df_month_brand.groupby("__data__")
 
 # Meta mensal (marca ou unidade)
 meta_mes_ref = meta_marca_mes(empresa_selecionada) if un_sel == "(Consolidado da Marca)" else meta_unidade_mes(empresa_selecionada, un_sel)
-meta_dia_const = safe_div(meta_mes_ref, dias_uteis_total)
+meta_dia_const = safe_div(meta_mes_ref, dias_uteis_total)  # referência fixa (usa slider)
 
-# Construir a tabela catch-up
+# Lista de dias úteis (SEG–SEX) do mês para distribuir a meta
+month_start = date(ref_year, ref_month, 1)
+month_end = date(ref_year, ref_month, calendar.monthrange(ref_year, ref_month)[1])
+all_days = pd.date_range(month_start, month_end, freq="D")
+workdays_dates = [ts.date() for ts in all_days if is_workday(ts.date())]
+
+# Mapa: em cada dia útil, quantos dias úteis (incluindo hoje) ainda faltam
+remaining_map = {}
+for idx, wd in enumerate(workdays_dates):
+    remaining_map[wd] = len(workdays_dates) - idx
+
 rows = []
 acum_real = 0
-dias_processados = 0
 for d, liq in daily_series.items():
-    dias_processados += 1
-    dias_restantes_incl_hoje = max(dias_uteis_total - (dias_processados - 1), 1)
-    meta_dia_ajustada = safe_div((meta_mes_ref - acum_real), dias_restantes_incl_hoje)
+    if d in remaining_map:
+        # Dia útil: distribui a meta pelos dias úteis restantes (inclui hoje)
+        dias_restantes_incl_hoje = remaining_map[d]
+        meta_dia_ajustada = safe_div((meta_mes_ref - acum_real), dias_restantes_incl_hoje)
+    else:
+        # Sábado/Domingo: sem meta do dia
+        meta_dia_ajustada = 0
+
     diff_dia = liq - meta_dia_ajustada
     acum_real += liq
     saldo_restante = meta_mes_ref - acum_real
+
     rows.append({
         "Data": d.strftime("%d/%m/%Y"),
         "Meta (constante)": round(meta_dia_const, 1),
@@ -410,7 +421,7 @@ for d, liq in daily_series.items():
         "Δ do Dia (Real − Meta Aj.)": round(diff_dia, 1),
         "Acumulado Líquido": int(acum_real),
         "Saldo p/ Bater Meta": int(saldo_restante),
-        "Status": "✅" if liq >= meta_dia_ajustada else "❌"
+        "Status": "✅" if liq >= meta_dia_ajustada and meta_dia_ajustada > 0 else ("—" if meta_dia_ajustada == 0 else "❌")
     })
 
 st.dataframe(pd.DataFrame(rows), use_container_width=True)
@@ -418,7 +429,6 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 # ============ Ranking Diário Top/Bottom 5 ============
 st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
 
-# Escolher a data para o ranking (se não estiver em modo diário, usa a última do mês)
 if chosen_date and (isinstance(chosen_date, date) and chosen_date.year==ref_year and chosen_date.month==ref_month):
     rank_date = chosen_date
 else:
@@ -427,31 +437,33 @@ else:
 if rank_date is None:
     st.info("Ainda não há dados neste mês para montar o ranking.")
 else:
-    # dia anterior disponível
     prev_days = sorted([d for d in df_marca_all["__data__"].unique()
                         if isinstance(d, date) and d < rank_date and d.month==ref_month and d.year==ref_year])
-    prev_date = prev_days[-1] if prev_days else None
+    prev_date = prev_days[-1] if prev_date := (prev_days[-1] if prev_days else None) else None
 
-    # dataframe do dia e do dia anterior
     df_day = df_marca_all[df_marca_all["__data__"] == rank_date].copy()
     df_prev = df_marca_all[df_marca_all["__data__"] == prev_date].copy() if prev_date else pd.DataFrame(columns=df_marca_all.columns)
 
-    # agregações por unidade
     agg_day = df_day.groupby("unidade").apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).rename("liq").to_frame().reset_index()
     if prev_date:
         agg_prev = df_prev.groupby("unidade").apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).rename("liq_prev").to_frame().reset_index()
     else:
         agg_prev = pd.DataFrame(columns=["unidade", "liq_prev"])
 
-    # juntar metas e calcular % do dia e delta vs ontem
     metas_u = pd.DataFrame(
         [(u, meta_unidade_mes(empresa_selecionada, u)) for u in agg_day["unidade"]],
         columns=["unidade","meta_mes"]
     )
     df_rank = agg_day.merge(metas_u, on="unidade", how="left").merge(agg_prev, on="unidade", how="left")
     df_rank["meta_dia"] = df_rank["meta_mes"] / dias_uteis_total
-    df_rank["pct_hoje"] = df_rank.apply(lambda r: safe_div(r["liq"], r["meta_dia"]) * 100 if r["meta_dia"] else 0, axis=1)
-    df_rank["pct_ontem"] = df_rank.apply(lambda r: safe_div(r.get("liq_prev", 0), r["meta_dia"]) * 100 if r["meta_dia"] else 0, axis=1)
+
+    # Se a data do ranking for sábado/domingo, meta do dia = 0 => não calcula %
+    if is_workday(rank_date):
+        df_rank["pct_hoje"] = df_rank.apply(lambda r: safe_div(r["liq"], r["meta_dia"]) * 100 if r["meta_dia"] else 0, axis=1)
+        df_rank["pct_ontem"] = df_rank.apply(lambda r: safe_div(r.get("liq_prev", 0), r["meta_dia"]) * 100 if r["meta_dia"] else 0, axis=1)
+    else:
+        df_rank["pct_hoje"] = 0.0
+        df_rank["pct_ontem"] = 0.0
     df_rank["delta_pct"] = df_rank["pct_hoje"] - df_rank["pct_ontem"]
     df_rank = df_rank.sort_values("pct_hoje", ascending=False)
 
@@ -464,10 +476,10 @@ else:
                 arrow = "⬆️" if r["delta_pct"] > 0 else ("⬇️" if r["delta_pct"] < 0 else "➡️")
                 linhas.append({
                     "Unidade": r["unidade"],
-                    "% do Dia": f"{r['pct_hoje']:.0f}%",
-                    "Δ vs Ontem": f"{arrow} {abs(r['delta_pct']):.0f} pp",
+                    "% do Dia": (f"{r['pct_hoje']:.0f}%" if is_workday(rank_date) else "—"),
+                    "Δ vs Ontem": (f"{arrow} {abs(r['delta_pct']):.0f} pp" if is_workday(rank_date) else "—"),
                     "Líquido (Dia)": int(r["liq"]),
-                    "Meta do Dia": int(round(r["meta_dia"])) if r["meta_dia"] else 0
+                    "Meta do Dia": int(round(r["meta_dia"])) if (is_workday(rank_date) and r["meta_dia"]) else 0
                 })
             st.dataframe(pd.DataFrame(linhas), use_container_width=True)
 
