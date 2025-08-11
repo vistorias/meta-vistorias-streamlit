@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import altair as alt
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, date, timedelta
@@ -78,7 +79,7 @@ if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
 # =========================
-# Guardar o histórico completo ANTES de filtrar por data
+# Guardar histórico completo (df_full) e visão filtrável (df_view)
 # =========================
 df_full = df.copy()
 
@@ -93,7 +94,6 @@ st.sidebar.subheader("🗓️ Filtro por Data do Relatório")
 daily_mode = False
 chosen_date = None
 
-# usamos df_full para montar a lista de datas
 if df_full["__data__"].notna().any():
     datas_validas = sorted({d for d in df_full["__data__"] if pd.notna(d)})
     default_idx = 0
@@ -105,7 +105,7 @@ if df_full["__data__"].notna().any():
     )
     if escolha != "(Mês inteiro)":
         chosen_date = datetime.strptime(escolha, "%d/%m/%Y").date()
-        df_view = df_full[df_full["__data__"] == chosen_date]   # << visão filtrada
+        df_view = df_full[df_full["__data__"] == chosen_date]
         daily_mode = True
     else:
         df_view = df_full.copy()
@@ -121,9 +121,8 @@ if len(empresas) == 0:
 
 empresa_selecionada = st.selectbox("Selecione a Marca:", empresas)
 
-# df_filtrado: visão (mês inteiro OU dia) para cartões/tabelas/gráfico
+# visão atual e histórico completo por marca
 df_filtrado = df_view[df_view['empresa'] == empresa_selecionada].copy()
-# df_marca_all: histórico completo da marca (para heatmap/catch-up/ranking)
 df_marca_all = df_full[df_full["empresa"] == empresa_selecionada].copy()
 
 # ========== Helpers ==========
@@ -249,7 +248,7 @@ for _, r in agr.iterrows():
 
 st.dataframe(pd.DataFrame(linhas), use_container_width=True)
 
-# ========== Gráfico ==========
+# ========== Gráfico (matplotlib) ==========
 st.subheader("📊 Produção Realizada por Unidade " + ("(Líquido - Dia)" if daily_mode else "(Líquido)"))
 unidades = [d["Unidade"] for d in linhas]
 prod_liq = [d["Total Líquido (Dia)"] if daily_mode else d["Total Líquido"] for d in linhas]
@@ -305,14 +304,11 @@ st.markdown(
 )
 
 # =========================
-# 📅 Heatmap do Mês (Calendário) — interativo (Plotly)
+# 📅 Heatmap do Mês (Calendário) — Altair interativo
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
-import plotly.graph_objects as go
-
-# histórico completo da marca (df_marca_all já existe acima)
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
 if datas_marca:
     last_date = datas_marca[-1]
@@ -339,89 +335,77 @@ else:
     daily_liq = pd.DataFrame(columns=["__data__", "liq"])
 
 meta_dia_base = (metas_gerais.get(empresa_selecionada, 0) / dias_uteis_total) if dias_uteis_total else 0
-metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
-show_values = st.checkbox("Mostrar valor dentro das células", value=False)
+metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric_altair")
+show_values = st.checkbox("Mostrar valor dentro das células", value=False, key="show_values_altair")
 
-# grade 6x7
+# construir dataframe do calendário
 first_weekday, n_days = calendar.monthrange(ref_year, ref_month)
-x_vals = list(range(7))
-y_vals = list(range(6))
-x_ticktext = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"]
-
-z = np.full((6, 7), np.nan)
-text_grid = np.full((6, 7), "", dtype=object)
-day_grid = np.full((6, 7), np.nan)
-liq_grid = np.full((6, 7), np.nan)
-pct_grid = np.full((6, 7), np.nan)
-
-liq_map = {int(d.day): int(v) for d, v in zip(daily_liq["__data__"], daily_liq["liq"])}
-
-r, c = 0, first_weekday
+records = []
 for day in range(1, n_days + 1):
-    if c > 6:
-        r += 1; c = 0
     d = date(ref_year, ref_month, day)
-    liq_val = liq_map.get(day, np.nan)
-    pct_val = (liq_val / meta_dia_base * 100) if (pd.notna(liq_val) and meta_dia_base) else np.nan
+    liq = int(daily_liq.loc[daily_liq["__data__"] == d, "liq"].sum()) if len(daily_liq) else 0
+    pct = (liq / meta_dia_base * 100) if meta_dia_base else 0
+    # grid: semana (0..5) e dia da semana (0..6, seg..dom)
+    grid_col = d.weekday()
+    grid_row = (day + first_weekday - 1) // 7
+    value = pct if metric_choice == "% da meta do dia" and d.weekday() < 5 else (liq if metric_choice == "Total Líquido" else None)
+    records.append({
+        "date": pd.to_datetime(d),
+        "day": day,
+        "dow": grid_col,
+        "week": grid_row,
+        "liq": liq,
+        "pct": pct if d.weekday() < 5 else None,
+        "value": value
+    })
 
-    # cor
-    if metric_choice == "% da meta do dia":
-        z[r, c] = pct_val if d.weekday() < 5 else np.nan  # sem % em sáb/dom
-    else:
-        z[r, c] = liq_val
+cal_df = pd.DataFrame.from_records(records)
 
-    day_grid[r, c] = day
-    liq_grid[r, c] = liq_val
-    pct_grid[r, c] = pct_val
+# heatmap
+base = alt.Chart(cal_df).properties(width=700, height=320)
 
-    # texto interno
-    if show_values:
-        if metric_choice == "% da meta do dia" and pd.notna(pct_val) and d.weekday() < 5:
-            text_grid[r, c] = f"{day}<br>{pct_val:.0f}%"
-        elif metric_choice == "Total Líquido" and pd.notna(liq_val):
-            text_grid[r, c] = f"{day}<br>{int(liq_val)}"
-        else:
-            text_grid[r, c] = f"{day}"
-    else:
-        text_grid[r, c] = f"{day}"
+heat = base.mark_rect().encode(
+    x=alt.X('dow:O', title='', axis=alt.Axis(values=[0,1,2,3,4,5,6], labelExpr='["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"][datum.value]')),
+    y=alt.Y('week:O', title='', sort='descending', axis=None),
+    color=alt.Color('value:Q', title='%' if metric_choice == "% da meta do dia" else 'Líquido',
+                    scale=alt.Scale(scheme='viridis')),
+    tooltip=[
+        alt.Tooltip('date:T', title='Data'),
+        alt.Tooltip('liq:Q', title='Líquido', format='.0f'),
+        alt.Tooltip('pct:Q', title='% Meta', format='.0f')
+    ]
+)
 
-    c += 1
-
-finite = z[np.isfinite(z)]
-zmin = float(np.min(finite)) if finite.size else 0.0
-zmax = float(np.max(finite)) if finite.size else 1.0
-colorbar_title = "%" if metric_choice == "% da meta do dia" else "Líquido"
-
-# enviamos dia, líquido, % como customdata → tooltip seguro
-custom = np.dstack([day_grid, liq_grid, pct_grid])
-
-fig = go.Figure(
-    data=go.Heatmap(
-        z=z,
-        x=x_vals, y=y_vals,
-        text=text_grid,
-        texttemplate="%{text}",
-        textfont=dict(color="black", size=12),
-        customdata=custom,
-        hovertemplate="Dia %{customdata[0]:.0f}<br>Líquido: %{customdata[1]:.0f}<br>% Meta: %{customdata[2]:.0f}%<extra></extra>",
-        colorscale="Viridis",
-        zmin=zmin, zmax=zmax,
-        colorbar=dict(title=colorbar_title)
+labels = base.mark_text(baseline='middle', fontSize=12, color='black').encode(
+    x='dow:O',
+    y='week:O',
+    text=alt.condition(
+        alt.datum.value != None,
+        alt.value(''),
+        alt.value('')
     )
 )
 
-fig.update_xaxes(tickmode="array", tickvals=x_vals, ticktext=x_ticktext, showgrid=False, zeroline=False)
-fig.update_yaxes(tickmode="array", tickvals=y_vals, ticktext=[""]*6, autorange="reversed", showgrid=False, zeroline=False, showticklabels=False)
+# texto com dia + opcionalmente o valor
+if show_values:
+    text_expr = alt.expr.if_(alt.datum.value != None,
+                             alt.expr.concat(alt.datum.day, alt.value('\\n'),
+                                             alt.expr.if_(metric_choice == "% da meta do dia",
+                                                          alt.expr.format(alt.datum.pct, '.0f') + alt.value('%'),
+                                                          alt.expr.format(alt.datum.liq, '.0f'))),
+                             alt.datum.day)
+else:
+    text_expr = alt.datum.day
 
-# tamanho reduzido (ajuste aqui se quiser ainda menor)
-fig.update_layout(
-    width=780, height=380,
-    margin=dict(l=10, r=10, t=60, b=10),
-    title=f"{calendar.month_name[ref_month]} {ref_year} — {metric_choice}"
+labels = base.mark_text(baseline='middle', fontSize=12, color='black', lineBreak='\n').encode(
+    x='dow:O',
+    y='week:O',
+    text=text_expr
 )
 
-st.plotly_chart(fig, use_container_width=False)
-# ============ Tabela de Meta Ajustada (Catch-up) — sábado sem meta ============
+st.altair_chart(heat + labels, use_container_width=False)
+
+# ============ Tabela de Meta Ajustada (Catch-up) ============
 st.markdown("<div class='section-title'>📋 Acompanhamento Diário com Meta Ajustada (Catch-up)</div>", unsafe_allow_html=True)
 
 unidades_marca = ["(Consolidado da Marca)"] + sorted(df_marca_all["unidade"].dropna().unique().tolist())
@@ -439,15 +423,15 @@ daily_series = (df_month_brand.groupby("__data__")
 
 # Meta mensal (marca ou unidade)
 meta_mes_ref = meta_marca_mes(empresa_selecionada) if un_sel == "(Consolidado da Marca)" else meta_unidade_mes(empresa_selecionada, un_sel)
-meta_dia_const = safe_div(meta_mes_ref, dias_uteis_total)  # referência fixa (usa slider)
+meta_dia_const = safe_div(meta_mes_ref, dias_uteis_total)
 
-# Lista de dias úteis (SEG–SEX) do mês para distribuir a meta
+# Lista de dias úteis do mês
 month_start = date(ref_year, ref_month, 1)
 month_end = date(ref_year, ref_month, calendar.monthrange(ref_year, ref_month)[1])
 all_days = pd.date_range(month_start, month_end, freq="D")
 workdays_dates = [ts.date() for ts in all_days if is_workday(ts.date())]
 
-# Mapa de dias úteis restantes (inclui o dia atual)
+# mapa de dias restantes
 remaining_map = {}
 for idx, wd in enumerate(workdays_dates):
     remaining_map[wd] = len(workdays_dates) - idx
@@ -478,10 +462,9 @@ for d, liq in daily_series.items():
 
 st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-# ============ Ranking Diário Top/Bottom 5 (usa último dia útil anterior da unidade) ============
+# ============ Ranking Diário Top/Bottom 5 (último dia útil anterior da unidade) ============
 st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
 
-# Data do ranking (usa a escolhida; senão, última do mês com dados)
 if chosen_date and (isinstance(chosen_date, date) and chosen_date.year==ref_year and chosen_date.month==ref_month):
     rank_date = chosen_date
 else:
@@ -490,17 +473,14 @@ else:
 if rank_date is None:
     st.info("Ainda não há dados neste mês para montar o ranking.")
 else:
-    # Série diária por unidade (líquido) no mês - usa HISTÓRICO COMPLETO
     df_unit_daily = (df_marca_all
         .groupby(["unidade", "__data__"])
         .apply(lambda x: int(x["total"].sum() - x["revistorias"].sum()))
         .rename("liq")
         .reset_index())
 
-    # Hoje por unidade
     today_df = df_unit_daily[df_unit_daily["__data__"] == rank_date].copy()
 
-    # Busca o último dia ÚTIL anterior COM dado por unidade
     def last_workday_with_data(u):
         prevs = df_unit_daily[(df_unit_daily["unidade"] == u) & (df_unit_daily["__data__"] < rank_date)]
         prevs = prevs[prevs["__data__"].apply(is_workday)]
@@ -515,7 +495,6 @@ else:
         prev_map.append({"unidade": u, "__data_prev__": dprev, "liq_prev": liqprev})
     prev_df = pd.DataFrame(prev_map)
 
-    # Metas por unidade
     metas_u = pd.DataFrame(
         [(u, meta_unidade_mes(empresa_selecionada, u)) for u in today_df["unidade"].unique()],
         columns=["unidade", "meta_mes"]
@@ -527,19 +506,15 @@ else:
 
     workday_rank = is_workday(rank_date)
 
-    # % de hoje
     df_rank["pct_hoje"] = np.where(df_rank["meta_dia"] > 0,
                                    (df_rank["liq"] / df_rank["meta_dia"]) * 100, 0.0)
-    # % de ontem (se houver dia útil anterior com dado)
     df_rank["pct_ontem"] = np.where(
         (df_rank["meta_dia"] > 0) & df_rank["__data_prev__"].notna(),
         (df_rank["liq_prev"] / df_rank["meta_dia"]) * 100,
         np.nan
     )
-    # Delta (pp)
     df_rank["delta_pct"] = df_rank["pct_hoje"] - df_rank["pct_ontem"]
 
-    # Ordenação
     order_col = "pct_hoje" if workday_rank else "liq"
     df_rank = df_rank.sort_values(order_col, ascending=False)
 
