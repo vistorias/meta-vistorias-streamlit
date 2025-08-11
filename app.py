@@ -306,12 +306,13 @@ st.markdown(
 )
 
 # =========================
-# 📅 Heatmap do Mês (Calendário) — Altair (tamanho + tooltip)
+# 📅 Heatmap do Mês (Calendário) — Altair (com grade e “ruim” mais escuro)
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
-HEAT_W, HEAT_H = 980, 420  # tamanho que você gostou
+HEAT_W, HEAT_H = 980, 420   # tamanho atual que você gostou
+MIN_PCT = 60                # ponto de corte para escurecer dias ruins (ajuste se quiser)
 
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
 if datas_marca:
@@ -350,12 +351,14 @@ liq_map = daily_liq.set_index("__data__")["liq"].to_dict()
 records = []
 ord_dow = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"]
 
+# gerar pontos (somente dias do mês com posição na grade)
 for day in range(1, n_days + 1):
     d = date(ref_year, ref_month, day)
     if (last_data_day is None) or (d > last_data_day) or (d not in liq_map):
         liq = np.nan
     else:
         liq = float(liq_map[d])
+
     pct = (liq / meta_dia_base * 100) if (not np.isnan(liq) and meta_dia_base) else np.nan
 
     dow_idx = d.weekday()
@@ -382,13 +385,16 @@ for day in range(1, n_days + 1):
 
 cal_df = pd.DataFrame.from_records(records)
 
+# ====== camada principal ======
 base = alt.Chart(cal_df).properties(width=HEAT_W, height=HEAT_H)
 
-color_scale = alt.Scale(scheme='viridis')
-color_title = 'Líquido'
+# cor: deixa % mais sensível (MIN_PCT–120) e clamp
 if metric_choice == "% da meta do dia":
-    color_scale = alt.Scale(scheme='viridis', domain=[0, 120])  # 0–120%
+    color_scale = alt.Scale(scheme='viridis', domain=[MIN_PCT, 120], clamp=True)  # 82% cai mais à esquerda → mais escuro
     color_title = '%'
+else:
+    color_scale = alt.Scale(scheme='viridis')  # para Total Líquido, deixa automático
+    color_title = 'Líquido'
 
 heat = base.mark_rect().encode(
     x=alt.X('dow_label:N', title='', scale=alt.Scale(domain=ord_dow)),
@@ -401,10 +407,12 @@ heat = base.mark_rect().encode(
     ]
 )
 
+# rótulo do dia
 labels_day = base.mark_text(baseline='middle', dy=-8, fontSize=12, color='black').encode(
     x='dow_label:N', y='week_index:O', text='day:Q'
 )
 
+# rótulo do valor (opcional)
 chart = heat + labels_day
 if show_values:
     labels_val = base.mark_text(baseline='middle', dy=10, fontSize=11, color='black').encode(
@@ -412,7 +420,17 @@ if show_values:
     )
     chart = chart + labels_val
 
-st.altair_chart(chart, use_container_width=False)
+# ====== grade (linhas) ======
+max_week = int(cal_df["week_index"].max()) if len(cal_df) else 5
+grid_records = [{"dow_label": d, "week_index": w} for w in range(max_week+1) for d in ord_dow]
+grid_df = pd.DataFrame(grid_records)
+
+grid = alt.Chart(grid_df).mark_rect(stroke="#E6E6E6", strokeWidth=1, fillOpacity=0).encode(
+    x=alt.X('dow_label:N', title='', scale=alt.Scale(domain=ord_dow)),
+    y=alt.Y('week_index:O', title='', sort=alt.SortField('week_index', order='ascending'), axis=None)
+).properties(width=HEAT_W, height=HEAT_H)
+
+st.altair_chart(grid + chart, use_container_width=False)
 
 # ============ Tabela de Meta Ajustada (Catch-up) ============
 st.markdown("<div class='section-title'>📋 Acompanhamento Diário com Meta Ajustada (Catch-up)</div>", unsafe_allow_html=True)
