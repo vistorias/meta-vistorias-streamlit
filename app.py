@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, date, timedelta
+import calendar
 
 # ========== Config ==========
 st.set_page_config(layout="wide", page_title="Acompanhamento de Meta Mensal - Vistorias")
@@ -12,7 +14,7 @@ st.title("📊 Acompanhamento de Meta Mensal - Vistorias")
 st.markdown("""
 <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
   <h4 style="color: #cc3300; margin: 0;">👋 Bem-vindo(a) ao Painel de Acompanhamento de Metas!</h4>
-  <p style="margin: 5px 0 0 0;">Acompanhe a performance por mês ou por dia usando o filtro à esquerda.</p>
+  <p style="margin: 5px 0 0 0;">Acompanhe a performance por mês ou por dia usando o filtro à esquerda. Abaixo, veja também o <b>calendário (heatmap)</b>, a <b>tabela com meta ajustada</b> e o <b>ranking diário</b>.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -32,8 +34,7 @@ if "empresa" in df.columns: df["empresa"] = df["empresa"].astype(str).str.upper(
 if "unidade" in df.columns: df["unidade"] = df["unidade"].astype(str).str.upper()
 
 for col in ["total", "revistorias", "ticket_medio", "%_190"]:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
 df["ticket_medio_real"] = df["ticket_medio"] / 100 if "ticket_medio" in df.columns else 0
 if "%_190" not in df.columns: df["%_190"] = 0
@@ -62,18 +63,17 @@ else:
 
 # ========== Metas ==========
 metas_unidades = {
-    "TOKYO": {"BARRA DO CORDA": 677, "CHAPADINHA": 573, "SANTA INÊS": 2291, "SÃO JOÃO DOS PATOS": 453, "SÃO JOSÉ DE RIBAMAR": 2083},
-    "STARCHECK": {"BACABAL": 1658, "BALSAS": 1722, "CAXIAS": 604, "CODÓ": 446, "PINHEIRO": 917, "SÃO LUÍS": 3272},
-    "LOG": {"AÇAILÂNDIA": 1185, "CAROLINA": 126, "PRESIDENTE DUTRA": 926, "SÃO LUÍS": 4455, "TIMON": 896},
-    "VELOX": {"ESTREITO": 482, "GRAJAÚ": 521, "IMPERATRIZ": 3488, "PEDREIRAS": 625, "SÃO LUÍS": 1926}
+    "TOKYO": {"BARRA DO CORDA": 650, "CHAPADINHA": 550, "SANTA INÊS": 2200, "SÃO JOÃO DOS PATOS": 435, "SÃO JOSÉ DE RIBAMAR": 2000},
+    "STARCHECK": {"BACABAL": 1640, "BALSAS": 1505, "CAXIAS": 560, "CODÓ": 380, "PINHEIRO": 900, "SÃO LUÍS": 3200},
+    "LOG": {"AÇAILÂNDIA": 1100, "CAROLINA": 135, "PRESIDENTE DUTRA": 875, "SÃO LUÍS": 4240, "TIMON": 980},
+    "VELOX": {"ESTREITO": 463, "GRAJAÚ": 500, "IMPERATRIZ": 3350, "PEDREIRAS": 600, "SÃO LUÍS": 1850}
 }
-metas_gerais = {"TOKYO": 6076, "STARCHECK": 8620, "LOG": 7588, "VELOX": 7043}
-
-# correção de possível digitação de cidade
+metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
+# correção eventual
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
-# ========== Filtros (sidebar) ==========
+# ========== Sidebar ==========
 st.sidebar.header("📅 Dias úteis do mês")
 dias_uteis_total = int(st.sidebar.slider("Dias úteis no mês", 1, 31, 21, step=1, key="dias_total"))
 dias_uteis_passados = int(st.sidebar.slider("Dias úteis já passados", 0, 31, 16, step=1, key="dias_passados"))
@@ -81,8 +81,9 @@ dias_uteis_restantes = max(dias_uteis_total - dias_uteis_passados, 1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🗓️ Filtro por Data do Relatório")
-
 daily_mode = False
+chosen_date = None
+
 if df["__data__"].notna().any():
     datas_validas = sorted({d for d in df["__data__"] if pd.notna(d)})
     default_idx = 0
@@ -118,14 +119,13 @@ def meta_unidade_mes(marca: str, unidade: str) -> int:
 def safe_div(a, b):
     return (a / b) if b else 0
 
-# ========== Consolidados (marca) ==========
+# ========== Consolidado (marca) ==========
 meta_mes_marca = meta_marca_mes(empresa_selecionada)
 total_geral_marca = int(df_filtrado['total'].sum())
 total_rev_marca = int(df_filtrado['revistorias'].sum())
 total_liq_marca = total_geral_marca - total_rev_marca
 
 if daily_mode:
-    # ---- MODO DIÁRIO ----
     meta_dia_marca = safe_div(meta_mes_marca, dias_uteis_total)
     faltante_dia = max(int(round(meta_dia_marca)) - total_liq_marca, 0)
     tendencia = safe_div(total_liq_marca, meta_dia_marca) * 100
@@ -140,11 +140,10 @@ if daily_mode:
         ("Tendência (Dia)", f"{tendencia:.0f}% {'🚀' if tendencia >= 100 else '😟'}"),
     ]
 else:
-    # ---- MODO MENSAL ----
     faltante_marca = max(meta_mes_marca - total_liq_marca, 0)
     media_diaria = safe_div(total_liq_marca, dias_uteis_passados)
-    projecao_marca = media_diaria * dias_uteis_total
-    tendencia = safe_div(projecao_marca, meta_mes_marca) * 100
+    projecao_marca_total = total_liq_marca + media_diaria * dias_uteis_restantes  # forma "realizado + restante"
+    tendencia = safe_div(projecao_marca_total, meta_mes_marca) * 100
     cards = [
         ("Meta da Marca", meta_mes_marca),
         ("Total Geral", total_geral_marca),
@@ -152,7 +151,7 @@ else:
         ("Total Líquido", total_liq_marca),
         ("Faltante", faltante_marca),
         ("Necessidade/dia", int(safe_div(faltante_marca, dias_uteis_restantes))),
-        ("Projeção", int(projecao_marca)),
+        ("Projeção (Fim do mês)", int(projecao_marca_total)),
         ("Tendência", f"{tendencia:.0f}% {'🚀' if tendencia >= 100 else '😟'}"),
     ]
 
@@ -165,6 +164,7 @@ st.markdown("""
         min-width: 170px; flex: 1; }
 .card h4 { color: #cc3300; margin: 0 0 8px; font-size: 16px; }
 .card h2 { margin: 0; font-size: 26px; font-weight: bold; color: #222; }
+.section-title { font-size: 20px; font-weight: 700; margin: 18px 0 8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -201,23 +201,17 @@ for _, r in agr.iterrows():
         meta_col = int(round(meta_dia))
         falt_label = "Faltante (Dia)"
         nec_dia = faltante
-        total_label = "Total (Dia)"
-        rev_label = "Revistorias (Dia)"
-        liq_label = "Total Líquido (Dia)"
-        tend_label = "Tendência (Dia)"
+        total_label = "Total (Dia)"; rev_label = "Revistorias (Dia)"; liq_label = "Total Líquido (Dia)"; tend_label = "Tendência (Dia)"
     else:
         faltante = max(meta_mes - liq, 0)
         media = safe_div(liq, dias_uteis_passados)
-        proj_final = media * dias_uteis_total
+        proj_final = liq + media * dias_uteis_restantes
         tendencia_u = safe_div(proj_final, meta_mes) * 100 if meta_mes else 0
         tendencia_txt = f"{tendencia_u:.0f}% {'🚀' if tendencia_u >= 100 else '😟'}"
         meta_col = meta_mes
         falt_label = "Faltante (sobre Líquido)"
         nec_dia = safe_div(faltante, dias_uteis_restantes)
-        total_label = "Total"
-        rev_label = "Revistorias"
-        liq_label = "Total Líquido"
-        tend_label = "Tendência"
+        total_label = "Total"; rev_label = "Revistorias"; liq_label = "Total Líquido"; tend_label = "Tendência"
 
     ticket = round(float(r["ticket_medio_real"]), 2)
     icon_ticket = "✅" if ticket >= 161.50 else "❌"
@@ -271,29 +265,21 @@ if daily_mode:
     falt_geral = max(int(round(meta_dia_geral)) - liq_total, 0)
     tendencia_g = safe_div(liq_total, meta_dia_geral) * 100
     geral_cards = [
-        ("Meta do Dia (Geral)", int(round(meta_dia_geral))),
-        ("Total Geral (Dia)", real_total),
-        ("Total Revistorias (Dia)", rev_total),
-        ("Total Líquido (Dia)", liq_total),
-        ("Faltante (Dia)", falt_geral),
-        ("Necessidade/dia (Dia)", falt_geral),
-        ("Projeção (Dia)", liq_total),
-        ("Tendência (Dia)", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
+        ("Meta do Dia (Geral)", int(round(meta_dia_geral))), ("Total Geral (Dia)", real_total),
+        ("Total Revistorias (Dia)", rev_total), ("Total Líquido (Dia)", liq_total),
+        ("Faltante (Dia)", falt_geral), ("Necessidade/dia (Dia)", falt_geral),
+        ("Projeção (Dia)", liq_total), ("Tendência (Dia)", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
     ]
 else:
     falt_geral = max(meta_mes_geral - liq_total, 0)
     media_g = safe_div(liq_total, dias_uteis_passados)
-    proj_g = media_g * dias_uteis_total
-    tendencia_g = safe_div(proj_g, meta_mes_geral) * 100
+    proj_g_total = liq_total + media_g * dias_uteis_restantes
+    tendencia_g = safe_div(proj_g_total, meta_mes_geral) * 100
     geral_cards = [
-        ("Meta Geral", meta_mes_geral),
-        ("Total Geral", real_total),
-        ("Total Revistorias", rev_total),
-        ("Total Líquido", liq_total),
-        ("Faltante", falt_geral),
+        ("Meta Geral", meta_mes_geral), ("Total Geral", real_total), ("Total Revistorias", rev_total),
+        ("Total Líquido", liq_total), ("Faltante", falt_geral),
         ("Necessidade/dia", int(safe_div(falt_geral, dias_uteis_restantes))),
-        ("Projeção", int(proj_g)),
-        ("Tendência", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
+        ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendência", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
     ]
 
 st.markdown(
@@ -301,3 +287,176 @@ st.markdown(
     "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in geral_cards]) +
     "</div>", unsafe_allow_html=True
 )
+
+# =========================
+#   VISUALIZAÇÕES NOVAS
+# =========================
+st.markdown("---")
+st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
+
+# Determinar mês/ano de referência pelo último dado disponível da marca
+df_marca_all = df[df["empresa"] == empresa_selecionada].copy()
+datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
+if datas_marca:
+    last_date = datas_marca[-1]
+    months_available = sorted({(d.year, d.month) for d in datas_marca})
+    month_labels = [f"{y}-{m:02d}" for (y, m) in months_available]
+    default_month_idx = month_labels.index(f"{last_date.year}-{last_date.month:02d}") if f"{last_date.year}-{last_date.month:02d}" in month_labels else len(month_labels)-1
+    month_choice = st.selectbox("Mês de referência (marca)", options=month_labels, index=default_month_idx, key="mes_heatmap")
+    ref_year, ref_month = map(int, month_choice.split("-"))
+else:
+    today = date.today()
+    ref_year, ref_month = today.year, today.month
+
+# Agregar diário (líquido) da marca no mês escolhido
+def to_date(d): 
+    return d if isinstance(d, date) else d.date()
+
+df_month = df_marca_all[(df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year==ref_year and d.month==ref_month))]
+daily_liq = df_month.groupby("__data__", as_index=False).apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).reset_index()
+daily_liq.columns = ["__data__", "liq"]
+
+# valor de meta do dia (base)
+meta_dia_base = safe_div(meta_marca_mes(empresa_selecionada), dias_uteis_total)
+metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
+
+# Construir matriz calendário (6x7)
+first_weekday, n_days = calendar.monthrange(ref_year, ref_month)  # weekday: Monday=0 .. Sunday=6
+values = np.full((6,7), np.nan)  # usaremos nan para dias fora do mês
+labels = np.full((6,7), "", dtype=object)
+
+# Mapear valores por dia
+day_to_val = {}
+for _, row in daily_liq.iterrows():
+    d = row["__data__"]
+    if metric_choice == "% da meta do dia":
+        val = safe_div(row["liq"], meta_dia_base) * 100 if meta_dia_base else 0
+    else:
+        val = row["liq"]
+    day_to_val[d.day] = val
+
+row = 0; col = first_weekday
+for day in range(1, n_days+1):
+    if col > 6:
+        row += 1; col = 0
+    labels[row, col] = str(day)
+    values[row, col] = day_to_val.get(day, np.nan)
+    col += 1
+
+# Plot heatmap
+fig_h, ax_h = plt.subplots(figsize=(8, 5))
+im = ax_h.imshow(values, aspect='equal', cmap="YlOrRd", vmin=np.nanmin(values), vmax=np.nanmax(values))
+for i in range(values.shape[0]):
+    for j in range(values.shape[1]):
+        if labels[i, j] != "":
+            txt = labels[i, j]
+            ax_h.text(j, i, txt, ha="center", va="center", fontsize=10, color="black")
+ax_h.set_xticks(range(7)); ax_h.set_xticklabels(["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"])
+ax_h.set_yticks([]); ax_h.set_title(f"{calendar.month_name[ref_month]} {ref_year} — {metric_choice}")
+plt.colorbar(im, ax=ax_h, fraction=0.046, pad=0.04)
+st.pyplot(fig_h)
+
+# ============ Tabela de Meta Ajustada (Catch-up) ============
+st.markdown("<div class='section-title'>📋 Acompanhamento Diário com Meta Ajustada (Catch-up)</div>", unsafe_allow_html=True)
+
+# Escolher a unidade (ou consolidado da marca)
+unidades_marca = ["(Consolidado da Marca)"] + sorted(df_marca_all["unidade"].dropna().unique().tolist())
+un_sel = st.selectbox("Unidade", options=unidades_marca, index=0, key="un_meta_tab")
+
+# Usar o mesmo mês do heatmap para a tabela
+mask_month = df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year==ref_year and d.month==ref_month)
+df_month_brand = df_marca_all[mask_month].copy()
+
+if un_sel != "(Consolidado da Marca)":
+    df_month_brand = df_month_brand[df_month_brand["unidade"] == un_sel]
+
+# Série diária (líquido) ordenada
+daily_series = (df_month_brand.groupby("__data__")
+                .apply(lambda x: int(x["total"].sum() - x["revistorias"].sum()))
+                .sort_index())
+
+# Meta mensal (marca ou unidade)
+meta_mes_ref = meta_marca_mes(empresa_selecionada) if un_sel == "(Consolidado da Marca)" else meta_unidade_mes(empresa_selecionada, un_sel)
+meta_dia_const = safe_div(meta_mes_ref, dias_uteis_total)
+
+# Construir a tabela catch-up
+rows = []
+acum_real = 0
+dias_processados = 0
+for d, liq in daily_series.items():
+    dias_processados += 1
+    dias_restantes_incl_hoje = max(dias_uteis_total - (dias_processados - 1), 1)
+    meta_dia_ajustada = safe_div((meta_mes_ref - acum_real), dias_restantes_incl_hoje)
+    diff_dia = liq - meta_dia_ajustada
+    acum_real += liq
+    saldo_restante = meta_mes_ref - acum_real
+    rows.append({
+        "Data": d.strftime("%d/%m/%Y"),
+        "Meta (constante)": round(meta_dia_const, 1),
+        "Meta Ajustada (catch-up)": round(meta_dia_ajustada, 1),
+        "Realizado Líquido": int(liq),
+        "Δ do Dia (Real − Meta Aj.)": round(diff_dia, 1),
+        "Acumulado Líquido": int(acum_real),
+        "Saldo p/ Bater Meta": int(saldo_restante),
+        "Status": "✅" if liq >= meta_dia_ajustada else "❌"
+    })
+
+st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+# ============ Ranking Diário Top/Bottom 5 ============
+st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
+
+# Escolher a data para o ranking (se não estiver em modo diário, usa a última do mês)
+if chosen_date and (chosen_date.year==ref_year and chosen_date.month==ref_month):
+    rank_date = chosen_date
+else:
+    rank_date = max(daily_series.index) if len(daily_series) else None
+
+if rank_date is None:
+    st.info("Ainda não há dados neste mês para montar o ranking.")
+else:
+    # dia anterior disponível
+    prev_days = sorted([d for d in df_marca_all["__data__"].unique() if isinstance(d, date) and d < rank_date and d.month==ref_month and d.year==ref_year])
+    prev_date = prev_days[-1] if prev_days else None
+
+    # dataframe do dia e do dia anterior
+    df_day = df_marca_all[df_marca_all["__data__"] == rank_date].copy()
+    df_prev = df_marca_all[df_marca_all["__data__"] == prev_date].copy() if prev_date else pd.DataFrame(columns=df_marca_all.columns)
+
+    # agregações por unidade
+    agg_day = df_day.groupby("unidade").apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).rename("liq").to_frame().reset_index()
+    if prev_date:
+        agg_prev = df_prev.groupby("unidade").apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).rename("liq_prev").to_frame().reset_index()
+    else:
+        agg_prev = pd.DataFrame(columns=["unidade", "liq_prev"])
+
+    # juntar metas e calcular % do dia e delta vs ontem
+    metas_u = pd.DataFrame(
+        [(u, meta_unidade_mes(empresa_selecionada, u)) for u in agg_day["unidade"]],
+        columns=["unidade","meta_mes"]
+    )
+    df_rank = agg_day.merge(metas_u, on="unidade", how="left").merge(agg_prev, on="unidade", how="left")
+    df_rank["meta_dia"] = df_rank["meta_mes"] / dias_uteis_total
+    df_rank["pct_hoje"] = df_rank.apply(lambda r: safe_div(r["liq"], r["meta_dia"]) * 100 if r["meta_dia"] else 0, axis=1)
+    df_rank["pct_ontem"] = df_rank.apply(lambda r: safe_div(r.get("liq_prev", 0), r["meta_dia"]) * 100 if r["meta_dia"] else 0, axis=1)
+    df_rank["delta_pct"] = df_rank["pct_hoje"] - df_rank["pct_ontem"]
+    df_rank = df_rank.sort_values("pct_hoje", ascending=False)
+
+    col1, col2 = st.columns(2)
+    def render_rank(df_sub, title, container):
+        with container:
+            st.markdown(f"**{title} — {rank_date.strftime('%d/%m/%Y')}**")
+            linhas = []
+            for _, r in df_sub.iterrows():
+                arrow = "⬆️" if r["delta_pct"] > 0 else ("⬇️" if r["delta_pct"] < 0 else "➡️")
+                linhas.append({
+                    "Unidade": r["unidade"],
+                    "% do Dia": f"{r['pct_hoje']:.0f}%",
+                    "Δ vs Ontem": f"{arrow} {abs(r['delta_pct']):.0f} pp",
+                    "Líquido (Dia)": int(r["liq"]),
+                    "Meta do Dia": int(round(r["meta_dia"])) if r["meta_dia"] else 0
+                })
+            st.dataframe(pd.DataFrame(linhas), use_container_width=True)
+
+    render_rank(df_rank.head(5), "TOP 5", col1)
+    render_rank(df_rank.tail(5).sort_values("pct_hoje", ascending=True), "BOTTOM 5", col2)
