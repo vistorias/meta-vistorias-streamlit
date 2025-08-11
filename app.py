@@ -75,6 +75,7 @@ metas_unidades = {
     "VELOX": {"ESTREITO": 463, "GRAJAÚ": 500, "IMPERATRIZ": 3350, "PEDREIRAS": 600, "SÃO LUÍS": 1850}
 }
 metas_gerais = {"TOKYO": 5835, "STARCHECK": 8305, "LOG": 7330, "VELOX": 6763}
+# corrigir possível variação de nome
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
 
@@ -121,8 +122,9 @@ if len(empresas) == 0:
 
 empresa_selecionada = st.selectbox("Selecione a Marca:", empresas)
 
-# visão atual e histórico completo por marca
+# df_filtrado: visão atual (mês ou dia) para cartões/tabelas/gráfico
 df_filtrado = df_view[df_view['empresa'] == empresa_selecionada].copy()
+# df_marca_all: histórico completo da marca (para heatmap/catch-up/ranking)
 df_marca_all = df_full[df_full["empresa"] == empresa_selecionada].copy()
 
 # ========== Helpers ==========
@@ -283,19 +285,19 @@ if daily_mode:
         ("Meta do Dia (Geral)", int(round(meta_dia_geral))), ("Total Geral (Dia)", real_total),
         ("Total Revistorias (Dia)", rev_total), ("Total Líquido (Dia)", liq_total),
         ("Faltante (Dia)", falt_geral), ("Necessidade/dia (Dia)", falt_geral),
-        ("Projeção (Dia)", liq_total), ("Tendência (Dia)", f"{tendencia_g:.0f}% {'🚀' if tendência_g >= 100 else '😟'}"),
+        ("Projeção (Dia)", liq_total), ("Tendência (Dia)", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
     ]
 else:
-        falt_geral = max(meta_mes_geral - liq_total, 0)
-        media_g = safe_div(liq_total, dias_uteis_passados)
-        proj_g_total = liq_total + media_g * dias_uteis_restantes
-        tendencia_g = safe_div(proj_g_total, meta_mes_geral) * 100
-        geral_cards = [
-            ("Meta Geral", meta_mes_geral), ("Total Geral", real_total), ("Total Revistorias", rev_total),
-            ("Total Líquido", liq_total), ("Faltante", falt_geral),
-            ("Necessidade/dia", int(safe_div(falt_geral, dias_uteis_restantes))),
-            ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendencia", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
-        ]
+    falt_geral = max(meta_mes_geral - liq_total, 0)
+    media_g = safe_div(liq_total, dias_uteis_passados)
+    proj_g_total = liq_total + media_g * dias_uteis_restantes
+    tendencia_g = safe_div(proj_g_total, meta_mes_geral) * 100
+    geral_cards = [
+        ("Meta Geral", meta_mes_geral), ("Total Geral", real_total), ("Total Revistorias", rev_total),
+        ("Total Líquido", liq_total), ("Faltante", falt_geral),
+        ("Necessidade/dia", int(safe_div(falt_geral, dias_uteis_restantes))),
+        ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendência", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
+    ]
 
 st.markdown(
     "<div class='card-container'>" +
@@ -304,13 +306,12 @@ st.markdown(
 )
 
 # =========================
-# 📅 Heatmap do Mês (Calendário) — Altair (com tooltip)
+# 📅 Heatmap do Mês (Calendário) — Altair (tamanho + tooltip)
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
-# tamanho do quadro (o “bom” que você gostou)
-HEAT_W, HEAT_H = 980, 420
+HEAT_W, HEAT_H = 980, 420  # tamanho que você gostou
 
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
 if datas_marca:
@@ -343,7 +344,6 @@ meta_dia_base = (metas_gerais.get(empresa_selecionada, 0) / dias_uteis_total) if
 metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
 show_values = st.checkbox("Mostrar valor dentro das células", value=False, key="heatmap_labels")
 
-# montar a grade do mês (segunda=0 … domingo=6)
 first_weekday, n_days = calendar.monthrange(ref_year, ref_month)
 liq_map = daily_liq.set_index("__data__")["liq"].to_dict()
 
@@ -352,21 +352,18 @@ ord_dow = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"]
 
 for day in range(1, n_days + 1):
     d = date(ref_year, ref_month, day)
-
-    # dias futuros (sem dado) em branco
     if (last_data_day is None) or (d > last_data_day) or (d not in liq_map):
         liq = np.nan
     else:
         liq = float(liq_map[d])
-
     pct = (liq / meta_dia_base * 100) if (not np.isnan(liq) and meta_dia_base) else np.nan
 
-    dow_idx = d.weekday()                           # 0..6 (seg..dom)
+    dow_idx = d.weekday()
     dow_label = ord_dow[dow_idx]
-    week_index = (day + first_weekday - 1) // 7     # mesma regra do matplotlib
+    week_index = (day + first_weekday - 1) // 7
 
     if metric_choice == "% da meta do dia":
-        value = pct if (not np.isnan(pct) and dow_idx < 5) else np.nan  # sáb/dom em branco
+        value = pct if (not np.isnan(pct) and dow_idx < 5) else np.nan  # Sáb/Dom em branco
         val_label_str = f"{pct:.0f}%" if (show_values and not np.isnan(pct) and dow_idx < 5) else ""
     else:
         value = liq if not np.isnan(liq) else np.nan
@@ -385,10 +382,8 @@ for day in range(1, n_days + 1):
 
 cal_df = pd.DataFrame.from_records(records)
 
-# Chart
 base = alt.Chart(cal_df).properties(width=HEAT_W, height=HEAT_H)
 
-# escala da cor
 color_scale = alt.Scale(scheme='viridis')
 color_title = 'Líquido'
 if metric_choice == "% da meta do dia":
@@ -396,7 +391,7 @@ if metric_choice == "% da meta do dia":
     color_title = '%'
 
 heat = base.mark_rect().encode(
-    x=alt.X('dow_label:N', title='', sort=ord_dow),
+    x=alt.X('dow_label:N', title='', scale=alt.Scale(domain=ord_dow)),
     y=alt.Y('week_index:O', title='', sort=alt.SortField('week_index', order='ascending'), axis=None),
     color=alt.Color('value:Q', title=color_title, scale=color_scale),
     tooltip=[
@@ -406,7 +401,6 @@ heat = base.mark_rect().encode(
     ]
 )
 
-# rótulos (dia e, opcional, valor)
 labels_day = base.mark_text(baseline='middle', dy=-8, fontSize=12, color='black').encode(
     x='dow_label:N', y='week_index:O', text='day:Q'
 )
@@ -431,22 +425,18 @@ df_month_brand = df_marca_all[mask_month_brand].copy()
 if un_sel != "(Consolidado da Marca)":
     df_month_brand = df_month_brand[df_month_brand["unidade"] == un_sel]
 
-# Série diária (líquido) ordenada
 daily_series = (df_month_brand.groupby("__data__")
                 .apply(lambda x: int(x["total"].sum() - x["revistorias"].sum()))
                 .sort_index())
 
-# Meta mensal (marca ou unidade)
 meta_mes_ref = meta_marca_mes(empresa_selecionada) if un_sel == "(Consolidado da Marca)" else meta_unidade_mes(empresa_selecionada, un_sel)
 meta_dia_const = safe_div(meta_mes_ref, dias_uteis_total)
 
-# Lista de dias úteis do mês
 month_start = date(ref_year, ref_month, 1)
 month_end = date(ref_year, ref_month, calendar.monthrange(ref_year, ref_month)[1])
 all_days = pd.date_range(month_start, month_end, freq="D")
 workdays_dates = [ts.date() for ts in all_days if is_workday(ts.date())]
 
-# mapa de dias restantes
 remaining_map = {}
 for idx, wd in enumerate(workdays_dates):
     remaining_map[wd] = len(workdays_dates) - idx
