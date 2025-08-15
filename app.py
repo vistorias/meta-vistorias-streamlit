@@ -37,6 +37,13 @@ if "empresa" in df.columns:
 if "unidade" in df.columns:
     df["unidade"] = (df["unidade"].astype(str).str.upper()
                      .str.strip().str.replace(r"\s+", " ", regex=True))
+  # 👉 Merge: toda produção de RIACHÃO deve contar em BALSAS
+# (cobre variação com/sem acento)
+UNIDADE_MERGE_MAP = {
+    "RIACHÃO": "BALSAS",
+    "RIACHAO": "BALSAS",
+}
+df["unidade"] = df["unidade"].replace(UNIDADE_MERGE_MAP)
 
 for col in ["total", "revistorias", "ticket_medio", "%_190"]:
     if col in df.columns:
