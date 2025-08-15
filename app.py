@@ -202,6 +202,22 @@ st.markdown(
 # ========== Tabela por unidade ==========
 st.subheader("📍 Indicadores por Unidade")
 
+# (para o modo DIA, precisamos do MTD por unidade até a chosen_date)
+mtd_liq_by_unit = {}
+if daily_mode and chosen_date is not None:
+    mask_mtd = df_marca_all["__data__"].apply(
+        lambda d: isinstance(d, date)
+        and d.year == chosen_date.year
+        and d.month == chosen_date.month
+        and d <= chosen_date
+    )
+    df_mtd = df_marca_all[mask_mtd & (df_marca_all["empresa"] == empresa_selecionada)]
+    if len(df_mtd):
+        grp_mtd = (df_mtd.groupby("unidade", dropna=False, as_index=False)
+                        .agg(total=("total", "sum"), rev=("revistorias", "sum")))
+        grp_mtd["liq"] = (grp_mtd["total"] - grp_mtd["rev"]).astype(int)
+        mtd_liq_by_unit = dict(zip(grp_mtd["unidade"], grp_mtd["liq"]))
+
 agr = df_filtrado.groupby("unidade", dropna=False, as_index=False).agg(
     total=("total", "sum"),
     rev=("revistorias", "sum"),
@@ -217,7 +233,9 @@ for _, r in agr.iterrows():
     liq = total - rev
 
     meta_mes = meta_unidade_mes(empresa_selecionada, unidade)
+
     if daily_mode:
+        # métricas do DIA
         meta_dia = safe_div(meta_mes, dias_uteis_total)
         faltante = max(int(round(meta_dia)) - liq, 0)
         tendencia_u = safe_div(liq, meta_dia) * 100 if meta_dia else 0
@@ -226,7 +244,15 @@ for _, r in agr.iterrows():
         falt_label = "Faltante (Dia)"
         nec_dia = faltante
         total_label = "Total (Dia)"; rev_label = "Revistorias (Dia)"; liq_label = "Total Líquido (Dia)"; tend_label = "Tendência (Dia)"
+
+        # 🔮 Projeção (Mês) por unidade no modo DIA (usando MTD até chosen_date)
+        mtd_liq_u = int(mtd_liq_by_unit.get(unidade, liq))  # se não achar MTD, usa o do dia
+        media_u = safe_div(mtd_liq_u, dias_uteis_passados) if dias_uteis_passados else 0
+        proj_mes_u = int(round(mtd_liq_u + media_u * dias_uteis_restantes))
+        proj_col = proj_mes_u
+
     else:
+        # métricas do MÊS (visão padrão)
         faltante = max(meta_mes - liq, 0)
         media = safe_div(liq, dias_uteis_passados)
         proj_final = liq + media * dias_uteis_restantes
@@ -236,6 +262,8 @@ for _, r in agr.iterrows():
         falt_label = "Faltante (sobre Líquido)"
         nec_dia = safe_div(faltante, dias_uteis_restantes)
         total_label = "Total"; rev_label = "Revistorias"; liq_label = "Total Líquido"; tend_label = "Tendência"
+
+        proj_col = int(round(proj_final))  # 🔮 projeção do mês
 
     ticket = round(float(r["ticket_medio_real"]), 2)
     icon_ticket = "✅" if ticket >= 161.50 else "❌"
@@ -251,6 +279,7 @@ for _, r in agr.iterrows():
         falt_label: int(faltante),
         "Necessidade/dia": int(nec_dia) if daily_mode else round(nec_dia, 1),
         tend_label: tendencia_txt,
+        "Projeção (Mês)": proj_col,          # 👈 nova coluna
         "Ticket Médio (R$)": f"R$ {ticket:.2f} {icon_ticket}",
         "% ≥ R$190": f"{pct190:.0f}% {icon_190}"
     })
