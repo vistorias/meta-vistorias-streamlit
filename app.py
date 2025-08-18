@@ -77,11 +77,11 @@ else:
 # ========== Metas ==========
 metas_unidades = {
     "TOKYO": {"BARRA DO CORDA": 677, "CHAPADINHA": 573, "SANTA INÊS": 2291, "SÃO JOÃO DOS PATOS": 453, "SÃO JOSÉ DE RIBAMAR": 2083},
-    "STARCHECK": {"BACABAL": 1658, "BALSAS": 1722, "CAXIAS": 604, "CODÓ": 446, "PINHEIRO": 917, "SÃO LUÍS": 3272},
+    "STARCHECK": {"BACABAL": 1658, "BALSAS": 1642, "CAXIAS": 604, "CODÓ": 446, "PINHEIRO": 917, "SÃO LUÍS": 3272},
     "LOG": {"AÇAILÂNDIA": 1185, "CAROLINA": 126, "PRESIDENTE DUTRA": 926, "SÃO LUÍS": 4455, "TIMON": 896},
     "VELOX": {"ESTREITO": 482, "GRAJAÚ": 521, "IMPERATRIZ": 3488, "PEDREIRAS": 625, "SÃO LUÍS": 1926}
 }
-metas_gerais = {"TOKYO": 6076, "STARCHECK": 8620, "LOG": 7588, "VELOX": 7043}
+metas_gerais = {"TOKYO": 6076, "STARCHECK": 8539, "LOG": 7588, "VELOX": 7043}
 # corrigir possível variação de nome
 if "VELOX" in metas_unidades and "SÃO LÍS" in metas_unidades["VELOX"]:
     metas_unidades["VELOX"]["SÃO LUÍS"] = metas_unidades["VELOX"].pop("SÃO LÍS")
