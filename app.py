@@ -348,14 +348,15 @@ st.markdown(
 )
 
 # =========================
-# 📅 Heatmap do Mês (Calendário) — Altair (com grade e “ruim” mais escuro)
+# 📅 Heatmap do Mês (Calendário) — Altair (com grade e filtro por UNIDADE)
 # =========================
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
 HEAT_W, HEAT_H = 980, 420
-MIN_PCT = 60  # ponto de corte para escurecer dias ruins
+MIN_PCT = 60  # ponto de corte para escurecer dias "ruins"
 
+# 1) Escolha do mês (como já era)
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
 if datas_marca:
     last_date = datas_marca[-1]
@@ -369,9 +370,29 @@ else:
     today = date.today()
     ref_year, ref_month = today.year, today.month
 
-mask_month = df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month)
-df_month = df_marca_all[mask_month].copy()
+# 2) 🔎 NOVO: filtro de escopo do heatmap (consolidado da marca ou por unidade)
+unidades_da_marca = sorted([u for u in df_marca_all["unidade"].dropna().unique().tolist()])
+unidade_heat = st.selectbox(
+    "Escopo do heatmap",
+    options=["(Consolidado da Marca)"] + unidades_da_marca,
+    index=0,
+    key="heatmap_unidade"
+)
 
+# 3) Fonte de dados do mês, já considerando o filtro de unidade
+if unidade_heat == "(Consolidado da Marca)":
+    df_heat_src = df_marca_all.copy()
+    meta_mes_ref = metas_gerais.get(empresa_selecionada, 0)   # meta da MARCA
+    titulo_escopo = empresa_selecionada
+else:
+    df_heat_src = df_marca_all[df_marca_all["unidade"] == unidade_heat].copy()
+    meta_mes_ref = meta_unidade_mes(empresa_selecionada, unidade_heat)  # meta da UNIDADE
+    titulo_escopo = f"{empresa_selecionada} — {unidade_heat}"
+
+mask_month = df_heat_src["__data__"].apply(lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month)
+df_month = df_heat_src[mask_month].copy()
+
+# Agregação diária (líquido) da FONTE escolhida
 if len(df_month) > 0:
     tmp = (df_month.groupby("__data__", as_index=False)
                   .agg(total=("total", "sum"),
@@ -383,10 +404,19 @@ else:
     daily_liq = pd.DataFrame(columns=["__data__", "liq"])
     last_data_day = None
 
-meta_dia_base = (metas_gerais.get(empresa_selecionada, 0) / dias_uteis_total) if dias_uteis_total else 0
-metric_choice = st.radio("Cor do heatmap baseada em:", ["% da meta do dia", "Total Líquido"], horizontal=True, key="heatmap_metric")
+# 4) Escolha da métrica e labels
+metric_choice = st.radio(
+    "Cor do heatmap baseada em:",
+    ["% da meta do dia", "Total Líquido"],
+    horizontal=True,
+    key="heatmap_metric"
+)
 show_values = st.checkbox("Mostrar valor dentro das células", value=False, key="heatmap_labels")
 
+# Meta/dia de referência (marca OU unidade, conforme o filtro)
+meta_dia_base = (meta_mes_ref / dias_uteis_total) if dias_uteis_total else 0
+
+# 5) Montagem da grade de calendário
 first_weekday, n_days = calendar.monthrange(ref_year, ref_month)
 liq_map = daily_liq.set_index("__data__")["liq"].to_dict()
 
@@ -426,6 +456,7 @@ for day in range(1, n_days + 1):
 
 cal_df = pd.DataFrame.from_records(records)
 
+# 6) Plot (Altair) com grade
 base = alt.Chart(cal_df).properties(width=HEAT_W, height=HEAT_H)
 
 if metric_choice == "% da meta do dia":
@@ -467,6 +498,7 @@ grid = alt.Chart(grid_df).mark_rect(stroke="#E6E6E6", strokeWidth=1, fillOpacity
 ).properties(width=HEAT_W, height=HEAT_H)
 
 st.altair_chart(grid + chart, use_container_width=False)
+st.caption(f"Escopo: {titulo_escopo}")
 
 # ============ Tabela de Meta Ajustada (Catch-up) ============
 st.markdown("<div class='section-title'>📋 Acompanhamento Diário com Meta Ajustada (Catch-up)</div>", unsafe_allow_html=True)
