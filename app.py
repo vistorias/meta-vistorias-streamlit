@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -37,12 +38,9 @@ if "empresa" in df.columns:
 if "unidade" in df.columns:
     df["unidade"] = (df["unidade"].astype(str).str.upper()
                      .str.strip().str.replace(r"\s+", " ", regex=True))
-  # 👉 Merge: toda produção de RIACHÃO deve contar em BALSAS
-# (cobre variação com/sem acento)
-UNIDADE_MERGE_MAP = {
-    "RIACHÃO": "BALSAS",
-    "RIACHAO": "BALSAS",
-}
+
+# 👉 Merge: toda produção de RIACHÃO deve contar em BALSAS
+UNIDADE_MERGE_MAP = {"RIACHÃO": "BALSAS", "RIACHAO": "BALSAS"}
 df["unidade"] = df["unidade"].replace(UNIDADE_MERGE_MAP)
 
 for col in ["total", "revistorias", "ticket_medio", "%_190"]:
@@ -75,6 +73,7 @@ else:
     df["__data__"] = pd.NaT
 
 # ========== Metas ==========
+# (valores conforme você enviou)
 metas_unidades = {
     "TOKYO": {"BARRA DO CORDA": 677, "CHAPADINHA": 573, "SANTA INÊS": 2291, "SÃO JOÃO DOS PATOS": 453, "SÃO JOSÉ DE RIBAMAR": 2083},
     "STARCHECK": {"BACABAL": 1658, "BALSAS": 1642, "CAXIAS": 604, "CODÓ": 446, "PINHEIRO": 917, "SÃO LUÍS": 3272},
@@ -95,7 +94,10 @@ df_full = df.copy()
 st.sidebar.header("📅 Dias úteis do mês")
 dias_uteis_total = int(st.sidebar.slider("Dias úteis no mês", 1, 31, 21, step=1, key="dias_total"))
 dias_uteis_passados = int(st.sidebar.slider("Dias úteis já passados", 0, 31, 16, step=1, key="dias_passados"))
-dias_uteis_restantes = max(dias_uteis_total - dias_uteis_passados, 1)
+
+# ✅ permite 0 (mês encerrado)
+dias_uteis_restantes = max(dias_uteis_total - dias_uteis_passados, 0)
+mes_encerrado = (dias_uteis_restantes == 0)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🗓️ Filtro por Data do Relatório")
@@ -167,15 +169,17 @@ if daily_mode:
 else:
     faltante_marca = max(meta_mes_marca - total_liq_marca, 0)
     media_diaria = safe_div(total_liq_marca, dias_uteis_passados)
-    projecao_marca_total = total_liq_marca + media_diaria * dias_uteis_restantes
+    projecao_marca_total = total_liq_marca + media_diaria * dias_uteis_restantes  # se mês encerrado, = total_liq_marca
     tendencia = safe_div(projecao_marca_total, meta_mes_marca) * 100
+    necessidade_por_dia = 0 if mes_encerrado else int(safe_div(faltante_marca, dias_uteis_restantes))
+
     cards = [
         ("Meta da Marca", meta_mes_marca),
         ("Total Geral", total_geral_marca),
         ("Total Revistorias", total_rev_marca),
         ("Total Líquido", total_liq_marca),
         ("Faltante", faltante_marca),
-        ("Necessidade/dia", int(safe_div(faltante_marca, dias_uteis_restantes))),
+        ("Necessidade/dia", necessidade_por_dia),
         ("Projeção (Fim do mês)", int(projecao_marca_total)),
         ("Tendência", f"{tendencia:.0f}% {'🚀' if tendencia >= 100 else '😟'}"),
     ]
@@ -255,15 +259,15 @@ for _, r in agr.iterrows():
         # métricas do MÊS (visão padrão)
         faltante = max(meta_mes - liq, 0)
         media = safe_div(liq, dias_uteis_passados)
-        proj_final = liq + media * dias_uteis_restantes
+        proj_final = liq + media * dias_uteis_restantes  # se mês encerrado, = liq
         tendencia_u = safe_div(proj_final, meta_mes) * 100 if meta_mes else 0
         tendencia_txt = f"{tendencia_u:.0f}% {'🚀' if tendencia_u >= 100 else '😟'}"
         meta_col = meta_mes
         falt_label = "Faltante (sobre Líquido)"
-        nec_dia = safe_div(faltante, dias_uteis_restantes)
+        nec_dia = 0 if mes_encerrado else safe_div(faltante, dias_uteis_restantes)
         total_label = "Total"; rev_label = "Revistorias"; liq_label = "Total Líquido"; tend_label = "Tendência"
 
-        proj_col = int(round(proj_final))  # 🔮 projeção do mês
+        proj_col = int(round(proj_final))  # 🔮 projeção do mês (com 0 dias restantes vira realizado)
 
     ticket = round(float(r["ticket_medio_real"]), 2)
     icon_ticket = "✅" if ticket >= 161.50 else "❌"
@@ -279,7 +283,7 @@ for _, r in agr.iterrows():
         falt_label: int(faltante),
         "Necessidade/dia": int(nec_dia) if daily_mode else round(nec_dia, 1),
         tend_label: tendencia_txt,
-        "Projeção (Mês)": proj_col,          # 👈 nova coluna
+        "Projeção (Mês)": proj_col,
         "Ticket Médio (R$)": f"R$ {ticket:.2f} {icon_ticket}",
         "% ≥ R$190": f"{pct190:.0f}% {icon_190}"
     })
@@ -326,12 +330,14 @@ if daily_mode:
 else:
     falt_geral = max(meta_mes_geral - liq_total, 0)
     media_g = safe_div(liq_total, dias_uteis_passados)
-    proj_g_total = liq_total + media_g * dias_uteis_restantes
+    proj_g_total = liq_total + media_g * dias_uteis_restantes   # se mês encerrado, = liq_total
     tendencia_g = safe_div(proj_g_total, meta_mes_geral) * 100
+    necessidade_g = 0 if mes_encerrado else int(safe_div(falt_geral, dias_uteis_restantes))
+
     geral_cards = [
         ("Meta Geral", meta_mes_geral), ("Total Geral", real_total), ("Total Revistorias", rev_total),
         ("Total Líquido", liq_total), ("Faltante", falt_geral),
-        ("Necessidade/dia", int(safe_div(falt_geral, dias_uteis_restantes))),
+        ("Necessidade/dia", necessidade_g),
         ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendência", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
     ]
 
@@ -347,8 +353,8 @@ st.markdown(
 st.markdown("---")
 st.markdown("<div class='section-title'>📅 Heatmap do Mês (Calendário)</div>", unsafe_allow_html=True)
 
-HEAT_W, HEAT_H = 980, 420   # tamanho atual que você gostou
-MIN_PCT = 60                # ponto de corte para escurecer dias ruins (ajuste se quiser)
+HEAT_W, HEAT_H = 980, 420
+MIN_PCT = 60  # ponto de corte para escurecer dias ruins
 
 datas_marca = sorted([d for d in df_marca_all["__data__"].unique() if pd.notna(d)])
 if datas_marca:
@@ -387,7 +393,6 @@ liq_map = daily_liq.set_index("__data__")["liq"].to_dict()
 records = []
 ord_dow = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"]
 
-# gerar pontos (somente dias do mês com posição na grade)
 for day in range(1, n_days + 1):
     d = date(ref_year, ref_month, day)
     if (last_data_day is None) or (d > last_data_day) or (d not in liq_map):
@@ -421,15 +426,13 @@ for day in range(1, n_days + 1):
 
 cal_df = pd.DataFrame.from_records(records)
 
-# ====== camada principal ======
 base = alt.Chart(cal_df).properties(width=HEAT_W, height=HEAT_H)
 
-# cor: deixa % mais sensível (MIN_PCT–120) e clamp
 if metric_choice == "% da meta do dia":
-    color_scale = alt.Scale(scheme='viridis', domain=[MIN_PCT, 120], clamp=True)  # 82% cai mais à esquerda → mais escuro
+    color_scale = alt.Scale(scheme='viridis', domain=[MIN_PCT, 120], clamp=True)
     color_title = '%'
 else:
-    color_scale = alt.Scale(scheme='viridis')  # para Total Líquido, deixa automático
+    color_scale = alt.Scale(scheme='viridis')
     color_title = 'Líquido'
 
 heat = base.mark_rect().encode(
@@ -443,12 +446,10 @@ heat = base.mark_rect().encode(
     ]
 )
 
-# rótulo do dia
 labels_day = base.mark_text(baseline='middle', dy=-8, fontSize=12, color='black').encode(
     x='dow_label:N', y='week_index:O', text='day:Q'
 )
 
-# rótulo do valor (opcional)
 chart = heat + labels_day
 if show_values:
     labels_val = base.mark_text(baseline='middle', dy=10, fontSize=11, color='black').encode(
@@ -456,7 +457,6 @@ if show_values:
     )
     chart = chart + labels_val
 
-# ====== grade (linhas) ======
 max_week = int(cal_df["week_index"].max()) if len(cal_df) else 5
 grid_records = [{"dow_label": d, "week_index": w} for w in range(max_week+1) for d in ord_dow]
 grid_df = pd.DataFrame(grid_records)
@@ -524,10 +524,13 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 # ============ Ranking Diário Top/Bottom 5 ============
 st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
 
-if chosen_date and (isinstance(chosen_date, date) and chosen_date.year==ref_year and chosen_date.month==ref_month):
-    rank_date = chosen_date
+if 'daily_series' in locals() and len(daily_series):
+    if chosen_date and (isinstance(chosen_date, date) and chosen_date.year==ref_year and chosen_date.month==ref_month):
+        rank_date = chosen_date
+    else:
+        rank_date = max(daily_series.index) if len(daily_series) else None
 else:
-    rank_date = max(daily_series.index) if len(daily_series) else None
+    rank_date = None
 
 if rank_date is None:
     st.info("Ainda não há dados neste mês para montar o ranking.")
