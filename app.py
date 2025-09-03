@@ -483,7 +483,7 @@ labels_day = base.mark_text(baseline='middle', dy=-8, fontSize=12, color='black'
 
 chart = heat + labels_day
 if show_values:
-    labels_val = base.mark_text(baseline='middle', dy=10, fontSize=11, color='white', stroke='black', strokeWidth=0.8 ).encode(
+    labels_val = base.mark_text(baseline='middle', dy=10, fontSize=11, color='white', stroke='white', strokeWidth=0.8 ).encode(
         x='dow_label:N', y='week_index:O', text='val_label_str:N'
     )
     chart = chart + labels_val
