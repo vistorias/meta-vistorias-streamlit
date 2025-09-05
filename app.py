@@ -176,28 +176,48 @@ dias_uteis_passados = int(st.sidebar.slider("Dias úteis já passados", 0, 31, 1
 dias_uteis_restantes = max(dias_uteis_total - dias_uteis_passados, 0)
 mes_encerrado = (dias_uteis_restantes == 0)
 
+# --- Sidebar: mês e dia ---
 st.sidebar.markdown("---")
-st.sidebar.subheader("🗓️ Filtro por Data do Relatório")
-daily_mode = False
-chosen_date = None
+st.sidebar.subheader("🗓️ Período")
 
-if df_full["__data__"].notna().any():
-    datas_validas = sorted({d for d in df_full["__data__"] if pd.notna(d)})
-    default_idx = len(datas_validas)  # último disponível
+# 1) meses disponíveis nas suas bases (a partir de __data__)
+datas_validas = sorted([d for d in df_full["__data__"] if pd.notna(d)])
+if not datas_validas:
+    st.sidebar.info("Sem coluna de data reconhecida. Exibindo tudo.")
+    df_view = df_full.copy()
+    daily_mode, chosen_date = False, None
+    ym_ref = df_full["__ym__"].dropna().iloc[-1] if df_full["__ym__"].notna().any() else None
+else:
+    meses = sorted({(d.year, d.month) for d in datas_validas})
+    labels = [f"{mm:02d}/{yy}" for (yy, mm) in [(y, m) for (y, m) in meses]]
+    # default = último mês com dados
+    mes_idx_default = len(labels) - 1
+    mes_label = st.sidebar.selectbox("Mês de referência", options=labels, index=mes_idx_default)
+
+    # parse do label para ano/mês
+    mm_sel, yy_sel = mes_label.split("/")
+    ref_year, ref_month = int(yy_sel), int(mm_sel)
+
+    # 2) dias disponíveis dentro do mês escolhido
+    mask_mes = df_full["__data__"].apply(lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month)
+    dias_mes = sorted([d for d in df_full.loc[mask_mes, "__data__"].unique() if pd.notna(d)])
+
     escolha = st.sidebar.selectbox(
         "Data do relatório",
-        options=["(Mês inteiro)"] + [d.strftime("%d/%m/%Y") for d in datas_validas],
-        index=default_idx
+        options=["(Mês inteiro)"] + [d.strftime("%d/%m/%Y") for d in dias_mes],
+        index=0
     )
-    if escolha != "(Mês inteiro)":
-        chosen_date = datetime.strptime(escolha, "%d/%m/%Y").date()
-        df_view = df_full[df_full["__data__"] == chosen_date]
-        daily_mode = True
+
+    if escolha == "(Mês inteiro)":
+        df_view = df_full[mask_mes].copy()
+        daily_mode, chosen_date = False, None
     else:
-        df_view = df_full.copy()
-else:
-    st.sidebar.info("Sem coluna de data reconhecida. Exibindo mês inteiro.")
-    df_view = df_full.copy()
+        chosen_date = datetime.strptime(escolha, "%d/%m/%Y").date()
+        df_view = df_full[df_full["__data__"] == chosen_date].copy()
+        daily_mode = True
+
+    # ym_ref: mês escolhido (usado nas metas)
+    ym_ref = f"{ref_year}-{ref_month:02d}"
 
 # ======== empresa/marca ========
 empresas = sorted(df_view['empresa'].dropna().unique())
