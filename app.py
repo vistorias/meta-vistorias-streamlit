@@ -1,4 +1,4 @@
-# app.py
+# app.py — Ticket médio calculado via qtd_152 e qtd_190 (média ponderada)
 import re, calendar
 import streamlit as st
 import pandas as pd
@@ -16,7 +16,7 @@ st.title("📊 Acompanhamento de Meta Mensal - Vistorias")
 st.markdown("""
 <div style="background-color:#f0f2f6;padding:15px;border-radius:10px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,.1);">
   <h4 style="color:#cc3300;margin:0;">👋 Bem-vindo(a) ao Painel de Acompanhamento de Metas!</h4>
-  <p style="margin:5px 0 0 0;">Acompanhe a performance por mês ou por dia usando o filtro à esquerda. Veja também o <b>calendário (heatmap)</b>, a <b>tabela com meta ajustada</b> e o <b>ranking diário</b>.</p>
+  <p style="margin:5px 0 0 0;">Ticket médio = <b>(qtd_152×152 + qtd_190×190) ÷ total</b> (e agregado de forma ponderada).</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -88,25 +88,48 @@ dfs = []
 for r in ativos:
     sid = _sheet_id(r.get("URL",""))
     ym  = _ym_token(r.get("MÊS") or r.get("MES"))
-    if not sid: 
+    if not sid:
         continue
     sh = client.open_by_key(sid)
     data = pd.DataFrame(sh.sheet1.get_all_records())
     if data.empty:
         continue
+
     # padronização básica
     data.columns = [c.strip() for c in data.columns]
     if "empresa" in data.columns:
         data["empresa"] = (data["empresa"].astype(str).str.upper().str.strip().str.replace(r"\s+"," ",regex=True))
     if "unidade" in data.columns:
         data["unidade"] = (data["unidade"].astype(str).str.upper().str.strip().str.replace(r"\s+"," ",regex=True))
+
     date_candidates = [c for c in ["data_relatorio","DATA","Data","data"] if c in data.columns]
     date_col = date_candidates[0] if date_candidates else None
     data["__data__"] = data[date_col].apply(parse_date_value) if date_col else pd.NaT
+
     if ym is None and data["__data__"].notna().any():
         d = max([d for d in data["__data__"] if pd.notna(d)])
         ym = f"{d.year}-{d.month:02d}"
     data["__ym__"] = ym
+
+    # --------- AJUSTE: ticket médio a partir de qtd_152/qtd_190 ----------
+    # transforma em numérico
+    for c in ["qtd_152", "qtd_190", "total", "revistorias"]:
+        if c in data.columns:
+            data[c] = pd.to_numeric(data[c], errors="coerce").fillna(0)
+
+    # total_vist (se não existir 'total', soma 152+190)
+    if "total" in data.columns:
+        data["total_vist"] = data["total"]
+    else:
+        data["total_vist"] = data.get("qtd_152", 0) + data.get("qtd_190", 0)
+
+    # receita do dia e ticket do dia
+    data["receita_dia"] = data.get("qtd_152", 0)*152 + data.get("qtd_190", 0)*190
+    data["ticket_medio_dia"] = np.where(data["total_vist"]>0, data["receita_dia"]/data["total_vist"], np.nan)
+
+    # %≥190 do dia
+    data["pct_190"] = np.where(data["total_vist"]>0, (data.get("qtd_190",0)/data["total_vist"])*100, np.nan)
+
     dfs.append(data)
 
 if not dfs:
@@ -120,12 +143,12 @@ UNIDADE_MERGE_MAP = {"RIACHÃO":"BALSAS","RIACHAO":"BALSAS"}
 if "unidade" in df.columns:
     df["unidade"] = df["unidade"].replace(UNIDADE_MERGE_MAP)
 
-for col in ["total","revistorias","ticket_medio","%_190"]:
+# garante colunas essenciais
+for col in ["total_vist","revistorias","receita_dia","qtd_152","qtd_190","pct_190"]:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-df["ticket_medio_real"] = df["ticket_medio"]/100 if "ticket_medio" in df.columns else 0
-if "%_190" not in df.columns: df["%_190"] = 0
-if "revistorias" not in df.columns: df["revistorias"] = 0
+if "revistorias" not in df.columns:
+    df["revistorias"] = 0
 
 # --- METAS (aba METAS) ---
 try:
@@ -138,7 +161,7 @@ for r in metas_rows:
     ym = _ym_token(r.get("MÊS") or r.get("MES"))
     emp = str(r.get("EMPRESA","")).strip().upper()
     uni = str(r.get("UNIDADE","")).strip().upper()
-    if not ym or not emp or not uni: 
+    if not ym or not emp or not uni:
         continue
     du  = r.get("DIAS_UTEIS", "")
     mm  = r.get("META_MENSAL", "")
@@ -190,23 +213,16 @@ if not datas_validas:
 else:
     meses = sorted({(d.year, d.month) for d in datas_validas})
     labels = [f"{mm:02d}/{yy}" for (yy, mm) in [(y, m) for (y, m) in meses]]
-    # default = último mês com dados
     mes_idx_default = len(labels) - 1
     mes_label = st.sidebar.selectbox("Mês de referência", options=labels, index=mes_idx_default)
 
-    # parse do label para ano/mês
     mm_sel, yy_sel = mes_label.split("/")
     ref_year, ref_month = int(yy_sel), int(mm_sel)
 
-    # 2) dias disponíveis dentro do mês escolhido
     mask_mes = df_full["__data__"].apply(lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month)
     dias_mes = sorted([d for d in df_full.loc[mask_mes, "__data__"].unique() if pd.notna(d)])
 
-    escolha = st.sidebar.selectbox(
-        "Data do relatório",
-        options=["(Mês inteiro)"] + [d.strftime("%d/%m/%Y") for d in dias_mes],
-        index=0
-    )
+    escolha = st.sidebar.selectbox("Data do relatório", options=["(Mês inteiro)"] + [d.strftime("%d/%m/%Y") for d in dias_mes], index=0)
 
     if escolha == "(Mês inteiro)":
         df_view = df_full[mask_mes].copy()
@@ -216,7 +232,6 @@ else:
         df_view = df_full[df_full["__data__"] == chosen_date].copy()
         daily_mode = True
 
-    # ym_ref: mês escolhido (usado nas metas)
     ym_ref = f"{ref_year}-{ref_month:02d}"
 
 # ======== empresa/marca ========
@@ -238,16 +253,21 @@ else:
     ym_ref = df_full["__ym__"].dropna().iloc[-1]
 
 # =================== CONSOLIDADO (MARCA) ===================
-meta_mes_marca = meta_marca_mes(empresa_selecionada, ym_ref)
-total_geral_marca = int(df_filtrado['total'].sum())
+# Totais e receita da marca no escopo selecionado (para ticket ponderado)
+total_geral_marca = int(df_filtrado['total_vist'].sum())
 total_rev_marca   = int(df_filtrado['revistorias'].sum())
 total_liq_marca   = total_geral_marca - total_rev_marca
+receita_total_marca = float(df_filtrado['receita_dia'].sum())
+ticket_medio_marca  = safe_div(receita_total_marca, total_geral_marca)
+
+meta_mes_marca = meta_marca_mes(empresa_selecionada, ym_ref)
 
 if daily_mode:
-    meta_dia_marca = safe_div(meta_mes_marca, dias_uteis_total)  # referência geral
+    meta_dia_marca = safe_div(meta_mes_marca, dias_uteis_total)
     faltante_dia = max(int(round(meta_dia_marca)) - total_liq_marca, 0)
     tendencia = safe_div(total_liq_marca, meta_dia_marca) * 100
     cards = [
+        ("Ticket Médio (Dia)", f"R$ {ticket_medio_marca:.2f}"),
         ("Meta do Dia", int(round(meta_dia_marca))),
         ("Total Geral (Dia)", total_geral_marca),
         ("Total Revistorias (Dia)", total_rev_marca),
@@ -264,6 +284,7 @@ else:
     tendencia = safe_div(projecao_marca_total, meta_mes_marca) * 100
     necessidade_por_dia = 0 if mes_encerrado else int(safe_div(faltante_marca, dias_uteis_restantes))
     cards = [
+        ("Ticket Médio", f"R$ {ticket_medio_marca:.2f}"),
         ("Meta da Marca", meta_mes_marca),
         ("Total Geral", total_geral_marca),
         ("Total Revistorias", total_rev_marca),
@@ -297,23 +318,28 @@ if daily_mode and chosen_date is not None:
     df_mtd = df_marca_all[mask_mtd & (df_marca_all["empresa"] == empresa_selecionada)]
     if len(df_mtd):
         grp_mtd = (df_mtd.groupby("unidade", dropna=False, as_index=False)
-                        .agg(total=("total","sum"), rev=("revistorias","sum")))
-        grp_mtd["liq"] = (grp_mtd["total"] - grp_mtd["rev"]).astype(int)
+                        .agg(total_vist=("total_vist","sum"), rev=("revistorias","sum")))
+        grp_mtd["liq"] = (grp_mtd["total_vist"] - grp_mtd["rev"]).astype(int)
         mtd_liq_by_unit = dict(zip(grp_mtd["unidade"], grp_mtd["liq"]))
 
-agr = df_filtrado.groupby("unidade", dropna=False, as_index=False).agg(
-    total=("total","sum"),
-    rev=("revistorias","sum"),
-    ticket_medio_real=("ticket_medio_real","mean"),
-    pct190=("%_190","mean")
-)
+# 👉 Ajuste: calcular ticket e %≥190 por unidade de forma ponderada
+agr = (df_filtrado.groupby("unidade", dropna=False, as_index=False)
+       .agg(total_vist=("total_vist","sum"),
+            rev=("revistorias","sum"),
+            receita=("receita_dia","sum"),
+            qtd_190=("qtd_190","sum")))
 
 linhas = []
 for _, r in agr.iterrows():
     unidade = r["unidade"]
-    total = int(r["total"]); rev = int(r["rev"]); liq = total - rev
+    total = int(r["total_vist"]); rev = int(r["rev"]); liq = total - rev
 
+    # metas
     meta_mes = meta_unidade_mes(empresa_selecionada, unidade, ym_ref)
+
+    # indicadores ponderados
+    ticket = safe_div(r["receita"], r["total_vist"])
+    pct190 = safe_div(r["qtd_190"], r["total_vist"]) * 100
 
     if daily_mode:
         du_unit = dias_uteis_unidade(empresa_selecionada, unidade, ym_ref)
@@ -340,9 +366,8 @@ for _, r in agr.iterrows():
         total_label = "Total"; rev_label = "Revistorias"; liq_label = "Total Líquido"; tend_label = "Tendência"
         proj_col = int(round(proj_final))
 
-    ticket = round(float(r["ticket_medio_real"]), 2)
     icon_ticket = "✅" if ticket >= 161.50 else "❌"
-    pct190 = float(r["pct190"]); icon_190 = "✅" if pct190 >= 25 else ("⚠️" if pct190 >= 20 else "❌")
+    icon_190 = "✅" if pct190 >= 25 else ("⚠️" if pct190 >= 20 else "❌")
 
     linhas.append({
         "Unidade": unidade,
@@ -378,10 +403,16 @@ st.pyplot(fig)
 st.markdown("---")
 st.markdown("## 🏢 Consolidado Geral - Total das 4 Marcas")
 
-agg_geral = df_view.groupby("empresa", dropna=False).agg(total=("total","sum"), rev=("revistorias","sum")).reset_index()
+agg_geral = (df_view.groupby("empresa", dropna=False)
+             .agg(total=("total_vist","sum"),
+                  rev=("revistorias","sum"),
+                  receita=("receita_dia","sum"))
+             .reset_index())
+
 real_total = int(agg_geral["total"].sum())
 rev_total  = int(agg_geral["rev"].sum())
 liq_total  = real_total - rev_total
+ticket_medio_geral = safe_div(float(agg_geral["receita"].sum()), real_total)
 
 # meta geral = soma das marcas com metas do mês de referência
 meta_mes_geral = sum(meta_marca_mes(m, ym_ref) for m in metas_unidades_base.keys())
@@ -391,6 +422,7 @@ if daily_mode:
     falt_geral = max(int(round(meta_dia_geral)) - liq_total, 0)
     tendencia_g = safe_div(liq_total, meta_dia_geral) * 100
     geral_cards = [
+        ("Ticket Médio (Dia)", f"R$ {ticket_medio_geral:.2f}"),
         ("Meta do Dia (Geral)", int(round(meta_dia_geral))), ("Total Geral (Dia)", real_total),
         ("Total Revistorias (Dia)", rev_total), ("Total Líquido (Dia)", liq_total),
         ("Faltante (Dia)", falt_geral), ("Necessidade/dia (Dia)", falt_geral),
@@ -403,9 +435,10 @@ else:
     tendencia_g = safe_div(proj_g_total, meta_mes_geral) * 100
     necessidade_g = 0 if mes_encerrado else int(safe_div(falt_geral, dias_uteis_restantes))
     geral_cards = [
-        ("Meta Geral", meta_mes_geral), ("Total Geral", real_total), ("Total Revistorias", rev_total),
-        ("Total Líquido", liq_total), ("Faltante", falt_geral),
-        ("Necessidade/dia", necessidade_g),
+        ("Ticket Médio", f"R$ {ticket_medio_geral:.2f}"),
+        ("Meta Geral", meta_mes_geral), ("Total Geral", real_total),
+        ("Total Revistorias", rev_total), ("Total Líquido", liq_total),
+        ("Faltante", falt_geral), ("Necessidade/dia", necessidade_g),
         ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendência", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
     ]
 
@@ -447,7 +480,7 @@ mask_month = df_heat_src["__data__"].apply(lambda d: isinstance(d, date) and d.y
 df_month = df_heat_src[mask_month].copy()
 
 if len(df_month) > 0:
-    tmp = (df_month.groupby("__data__", as_index=False).agg(total=("total","sum"), rev=("revistorias","sum")))
+    tmp = (df_month.groupby("__data__", as_index=False).agg(total=("total_vist","sum"), rev=("revistorias","sum")))
     tmp["liq"] = (tmp["total"] - tmp["rev"]).astype(int)
     daily_liq = tmp[["__data__","liq"]]
     last_data_day = daily_liq["__data__"].max()
@@ -526,7 +559,7 @@ df_month_brand = df_marca_all[mask_month_brand].copy()
 if un_sel != "(Consolidado da Marca)":
     df_month_brand = df_month_brand[df_month_brand["unidade"] == un_sel]
 
-daily_series = (df_month_brand.groupby("__data__").apply(lambda x: int(x["total"].sum() - x["revistorias"].sum())).sort_index())
+daily_series = (df_month_brand.groupby("__data__").apply(lambda x: int(x["total_vist"].sum() - x["revistorias"].sum())).sort_index())
 
 if un_sel == "(Consolidado da Marca)":
     meta_mes_ref = meta_marca_mes(empresa_selecionada, f"{ref_year}-{ref_month:02d}")
@@ -582,7 +615,7 @@ if rank_date is None:
 else:
     df_unit_daily = (df_marca_all
         .groupby(["unidade","__data__"])
-        .apply(lambda x: int(x["total"].sum() - x["revistorias"].sum()))
+        .apply(lambda x: int(x["total_vist"].sum() - x["revistorias"].sum()))
         .rename("liq").reset_index())
 
     today_df = df_unit_daily[df_unit_daily["__data__"] == rank_date].copy()
