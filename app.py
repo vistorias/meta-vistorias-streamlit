@@ -1,4 +1,4 @@
-# app.py — versão com retry + cache + fail-soft
+# app.py — robusto (retry + cache) e com correção de KeyError no gráfico
 import re, calendar, time, random
 from datetime import datetime, date
 
@@ -28,7 +28,6 @@ SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 
 def _should_retry(exc: Exception) -> bool:
     msg = str(exc).lower()
-    # sinais comuns de erros transitórios
     return any(s in msg for s in [
         "rate limit", "quota", "429", "internal error", "backend error",
         "failed to fetch", "fetch_sheet_metadata", "service unavailable", "deadline"
@@ -64,7 +63,6 @@ def read_sheet_records_by_key(sheet_key: str, tab: str | None):
     client = _get_client()
     sh = _with_retry(lambda: client.open_by_key(sheet_key))
     ws = _with_retry(lambda: (sh.worksheet(tab) if tab else sh.sheet1))
-    # get_all_records já traz cabeçalho, é suficiente aqui
     rows = _with_retry(lambda: ws.get_all_records())
     return rows
 
@@ -168,7 +166,7 @@ for r in ativos:
         dfs.append(data)
     except Exception as e:
         falhas.append((r.get("MÊS") or r.get("MES") or ym or "?", str(e)))
-        # segue o loop (fail-soft)
+        # segue o loop
 
 if falhas:
     st.warning("Algumas planilhas foram ignoradas por erro transitório:\n" +
@@ -210,7 +208,7 @@ for r in metas_rows:
 def meta_unidade_mes(empresa: str, unidade: str, ym: str) -> int:
     base = int(metas_unidades_base.get(empresa, {}).get(unidade, 0))
     du, mm = meta_map.get((ym, empresa, unidade), (None, None))
-    if mm is not None:     # meta explícita na aba METAS
+    if mm is not None:
         return int(mm)
     du = du if du is not None else BASE_21
     return int(round(base * (du/BASE_21)))
@@ -420,12 +418,38 @@ for _, r in agr.iterrows():
         "% ≥ R$190": f"{pct190:.0f}% {icon_190}"
     })
 
+# --- Normalização de chaves para evitar KeyError no gráfico ---
+for r in linhas:
+    # Total Líquido
+    if "Total Líquido (Dia)" in r and "Total Líquido" not in r:
+        r["Total Líquido"] = r["Total Líquido (Dia)"]
+    if "Total Líquido" in r and "Total Líquido (Dia)" not in r:
+        r["Total Líquido (Dia)"] = r["Total Líquido"]
+    # Total
+    if "Total (Dia)" in r and "Total" not in r:
+        r["Total"] = r["Total (Dia)"]
+    if "Total" in r and "Total (Dia)" not in r:
+        r["Total (Dia)"] = r["Total"]
+    # Revistorias
+    if "Revistorias (Dia)" in r and "Revistorias" not in r:
+        r["Revistorias"] = r["Revistorias (Dia)"]
+    if "Revistorias" in r and "Revistorias (Dia)" not in r:
+        r["Revistorias (Dia)"] = r["Revistorias"]
+
 st.dataframe(pd.DataFrame(linhas), use_container_width=True)
 
 # =================== GRÁFICO (matplotlib) ===================
 st.subheader("📊 Produção Realizada por Unidade " + ("(Líquido - Dia)" if ('daily_mode' in locals() and daily_mode) else "(Líquido)"))
-unidades = [d["Unidade"] for d in linhas]
-prod_liq = [d["Total Líquido (Dia)"] if ('daily_mode' in locals() and daily_mode) else d["Total Líquido"] for d in linhas]
+unidades = [d.get("Unidade", "—") for d in linhas]
+
+# Blindagem: tenta pegar a métrica do contexto e cai para a outra chave se necessário
+prod_liq = []
+for dct in linhas:
+    if 'daily_mode' in locals() and daily_mode:
+        val = dct.get("Total Líquido (Dia)", dct.get("Total Líquido", 0))
+    else:
+        val = dct.get("Total Líquido", dct.get("Total Líquido (Dia)", 0))
+    prod_liq.append(int(val) if pd.notna(val) else 0)
 
 fig, ax = plt.subplots(figsize=(10,5))
 barras = ax.bar(unidades, prod_liq)
@@ -445,7 +469,7 @@ st.markdown("## 🏢 Consolidado Geral - Total das 4 Marcas")
 agg_geral = df_view.groupby("empresa", dropna=False).agg(total=("total","sum"), rev=("revistorias","sum")).reset_index()
 real_total = int(agg_geral["total"].sum())
 rev_total  = int(agg_geral["rev"].sum())
-liq_total  = real_total - rev_total
+liq_total  = int(real_total - rev_total)
 
 meta_mes_geral = sum(meta_marca_mes(m, ym_ref) for m in metas_unidades_base.keys())
 
@@ -528,13 +552,13 @@ liq_map = daily_liq.set_index("__data__")["liq"].to_dict()
 records = []
 ord_dow = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"]
 for day in range(1, n_days+1):
-    d = date(ref_year, ref_month, day)
-    if (last_data_day is None) or (d > last_data_day) or (d not in liq_map):
+    d0 = date(ref_year, ref_month, day)
+    if (last_data_day is None) or (d0 > last_data_day) or (d0 not in liq_map):
         liq = np.nan
     else:
-        liq = float(liq_map[d])
+        liq = float(liq_map[d0])
     pct = (liq / meta_dia_base * 100) if (not np.isnan(liq) and meta_dia_base) else np.nan
-    dow_idx = d.weekday()
+    dow_idx = d0.weekday()
     dow_label = ord_dow[dow_idx]
     week_index = (day + first_weekday - 1)//7
     if metric_choice == "% da meta do dia":
@@ -543,12 +567,12 @@ for day in range(1, n_days+1):
     else:
         value = liq if not np.isnan(liq) else np.nan
         val_label_str = f"{int(liq)}" if (show_values and not np.isnan(liq)) else ""
-    records.append({"date": pd.to_datetime(d), "day": day, "dow_label": dow_label, "week_index": week_index,
+    records.append({"date": pd.to_datetime(d0), "day": day, "dow_label": dow_label, "week_index": week_index,
                     "liq": liq, "pct": pct, "value": value, "val_label_str": val_label_str})
 
 cal_df = pd.DataFrame.from_records(records)
 
-base = alt.Chart(cal_df).properties(width=980, height=420)
+base = alt.Chart(cal_df).properties(width=HEAT_W, height=HEAT_H)
 color_scale = alt.Scale(scheme='viridis', domain=[MIN_PCT, 120], clamp=True) if metric_choice=="% da meta do dia" else alt.Scale(scheme='viridis')
 color_title = '%' if metric_choice=="% da meta do dia" else 'Líquido'
 
@@ -573,7 +597,7 @@ grid_df = pd.DataFrame(grid_records)
 grid = alt.Chart(grid_df).mark_rect(stroke="#E6E6E6", strokeWidth=1, fillOpacity=0).encode(
     x=alt.X('dow_label:N', title='', scale=alt.Scale(domain=ord_dow)),
     y=alt.Y('week_index:O', title='', sort=alt.SortField('week_index', order='ascending'), axis=None)
-).properties(width=980, height=420)
+).properties(width=HEAT_W, height=HEAT_H)
 
 st.altair_chart(grid + chart, use_container_width=False)
 st.caption(f"Escopo: {empresa_selecionada if unidade_heat=='(Consolidado da Marca)' else f'{empresa_selecionada} — {unidade_heat}'}")
@@ -609,16 +633,16 @@ remaining_map = {wd: (len(workdays_dates)-i) for i, wd in enumerate(workdays_dat
 
 rows = []
 acum_real = 0
-for d, liq in daily_series.items():
-    if d in remaining_map:
-        meta_dia_ajustada = safe_div((meta_mes_ref - acum_real), remaining_map[d])
+for d0, liq in daily_series.items():
+    if d0 in remaining_map:
+        meta_dia_ajustada = safe_div((meta_mes_ref - acum_real), remaining_map[d0])
     else:
         meta_dia_ajustada = 0
     diff_dia = liq - meta_dia_ajustada
     acum_real += liq
     saldo_restante = meta_mes_ref - acum_real
     rows.append({
-        "Data": d.strftime("%d/%m/%Y"),
+        "Data": d0.strftime("%d/%m/%Y"),
         "Meta (constante)": round(meta_dia_const, 1),
         "Meta Ajustada (catch-up)": round(meta_dia_ajustada, 1),
         "Realizado Líquido": int(liq),
@@ -691,16 +715,16 @@ else:
     def render_rank(df_sub, title, container):
         with container:
             st.markdown(f"**{title} — {rank_date.strftime('%d/%m/%Y')}**")
-            linhas = []
+            linhas_rank = []
             for _, r in df_sub.iterrows():
-                linhas.append({
+                linhas_rank.append({
                     "Unidade": r["unidade"],
                     "% do Dia": f"{r['pct_hoje']:.0f}%" if workday_rank else "—",
                     "Δ vs Ontem": fmt_delta(r["delta_pct"]) if workday_rank else "—",
                     "Líquido (Dia)": int(r["liq"]),
                     "Meta do Dia": int(round(r["meta_dia"])) if (workday_rank and r["meta_dia"]>0) else 0
                 })
-            st.dataframe(pd.DataFrame(linhas), use_container_width=True)
+            st.dataframe(pd.DataFrame(linhas_rank), use_container_width=True)
 
     render_rank(df_rank.head(5), "TOP 5", col1)
     render_rank(df_rank.tail(5).sort_values(order_col, ascending=True), "BOTTOM 5", col2)
