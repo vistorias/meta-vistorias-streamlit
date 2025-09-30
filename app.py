@@ -1,13 +1,16 @@
-# app.py
-import re, calendar
+# app.py — versão com retry + cache + fail-soft
+import re, calendar, time, random
+from datetime import datetime, date
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import altair as alt
+
 import gspread
+from gspread.exceptions import APIError
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, date
 
 # ================= CONFIG BÁSICA =================
 st.set_page_config(layout="wide", page_title="Acompanhamento de Meta Mensal - Vistorias")
@@ -20,11 +23,50 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ================= CONEXÃO GOOGLE SHEETS =================
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds_dict = st.secrets["gcp_service_account"]
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(creds)
+# ================= CONEXÃO GOOGLE SHEETS (com retry + cache) =================
+SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+
+def _should_retry(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    # sinais comuns de erros transitórios
+    return any(s in msg for s in [
+        "rate limit", "quota", "429", "internal error", "backend error",
+        "failed to fetch", "fetch_sheet_metadata", "service unavailable", "deadline"
+    ])
+
+def _with_retry(fn, *, tries=5, base=0.8, jitter=0.3):
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except APIError as e:
+            last = e
+            if i == tries - 1 or not _should_retry(e):
+                raise
+            time.sleep(base * (2 ** i) + random.random() * jitter)
+        except Exception as e:
+            last = e
+            if i == tries - 1 or not _should_retry(e):
+                raise
+            time.sleep(base * (2 ** i) + random.random() * jitter)
+    if last:
+        raise last
+
+@st.cache_resource(show_spinner=False)
+def _get_client():
+    creds_dict = st.secrets["gcp_service_account"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+    return gspread.authorize(creds)
+
+@st.cache_data(show_spinner=False, ttl=600)
+def read_sheet_records_by_key(sheet_key: str, tab: str | None):
+    """Lê todos os registros de uma worksheet como lista de dicts (cache 10 min)."""
+    client = _get_client()
+    sh = _with_retry(lambda: client.open_by_key(sheet_key))
+    ws = _with_retry(lambda: (sh.worksheet(tab) if tab else sh.sheet1))
+    # get_all_records já traz cabeçalho, é suficiente aqui
+    rows = _with_retry(lambda: ws.get_all_records())
+    return rows
 
 # ====== PLANILHA-ÍNDICE ======
 INDEX_SHEET_ID = "1L55P-vJifVEg6BHBGVLd00m3AXsz7hEyCPMA60G6Jms"
@@ -74,52 +116,63 @@ if "VELOX" in metas_unidades_base and "SÃO LÍS" in metas_unidades_base["VELOX"
     metas_unidades_base["VELOX"]["SÃO LUÍS"] = metas_unidades_base["VELOX"].pop("SÃO LÍS")
 BASE_21 = 21
 
-# =================== LER ÍNDICE: ARQUIVOS + METAS ===================
-idx = client.open_by_key(INDEX_SHEET_ID)
+# =================== LER ÍNDICE: ARQUIVOS + METAS (com cache e fail-soft) ===================
+try:
+    rows_arqs = read_sheet_records_by_key(INDEX_SHEET_ID, INDEX_TAB_ARQS)
+except Exception as e:
+    st.error(f"Não foi possível ler a aba ARQUIVOS do índice. Erro: {e}")
+    st.stop()
 
-# --- ARQUIVOS ---
-rows = idx.worksheet(INDEX_TAB_ARQS).get_all_records()
-ativos = [r for r in rows if str(r.get("ATIVO","S")).strip().upper() in {"S","SIM","Y","YES","TRUE","1"}]
+ativos = [r for r in rows_arqs if str(r.get("ATIVO","S")).strip().upper() in {"S","SIM","Y","YES","TRUE","1"}]
 if len(ativos) == 0:
     st.error("Planilha-índice vazia (aba ARQUIVOS).")
     st.stop()
 
 dfs = []
+falhas = []
 for r in ativos:
     sid = _sheet_id(r.get("URL",""))
     ym  = _ym_token(r.get("MÊS") or r.get("MES"))
     if not sid:
         continue
-    sh = client.open_by_key(sid)
-    data = pd.DataFrame(sh.sheet1.get_all_records())
-    if data.empty:
-        continue
+    try:
+        data_rows = read_sheet_records_by_key(sid, None)  # sheet1
+        data = pd.DataFrame(data_rows)
+        if data.empty:
+            continue
 
-    # padronização básica
-    data.columns = [c.strip() for c in data.columns]
-    if "empresa" in data.columns:
-        data["empresa"] = (data["empresa"].astype(str).str.upper().str.strip().str.replace(r"\s+"," ",regex=True))
-    if "unidade" in data.columns:
-        data["unidade"] = (data["unidade"].astype(str).str.upper().str.strip().str.replace(r"\s+"," ",regex=True))
+        # padronização básica
+        data.columns = [c.strip() for c in data.columns]
+        if "empresa" in data.columns:
+            data["empresa"] = (data["empresa"].astype(str).str.upper().str.strip().str.replace(r"\s+"," ",regex=True))
+        if "unidade" in data.columns:
+            data["unidade"] = (data["unidade"].astype(str).str.upper().str.strip().str.replace(r"\s+"," ",regex=True))
 
-    # data
-    date_candidates = [c for c in ["data_relatorio","DATA","Data","data"] if c in data.columns]
-    date_col = date_candidates[0] if date_candidates else None
-    data["__data__"] = data[date_col].apply(parse_date_value) if date_col else pd.NaT
+        # data
+        date_candidates = [c for c in ["data_relatorio","DATA","Data","data"] if c in data.columns]
+        date_col = date_candidates[0] if date_candidates else None
+        data["__data__"] = data[date_col].apply(parse_date_value) if date_col else pd.NaT
 
-    # deduz YM se faltar
-    if ym is None and data["__data__"].notna().any():
-        d = max([d for d in data["__data__"] if pd.notna(d)])
-        ym = f"{d.year}-{d.month:02d}"
-    data["__ym__"] = ym
+        # deduz YM se faltar
+        if ym is None and data["__data__"].notna().any():
+            d = max([d for d in data["__data__"] if pd.notna(d)])
+            ym = f"{d.year}-{d.month:02d}"
+        data["__ym__"] = ym
 
-    # números
-    for col in ["total","revistorias","%_190","qtd_152","qtd_190"]:
-        if col not in data.columns:
-            data[col] = 0
-        data[col] = pd.to_numeric(data[col], errors="coerce").fillna(0)
+        # números
+        for col in ["total","revistorias","%_190","qtd_152","qtd_190"]:
+            if col not in data.columns:
+                data[col] = 0
+            data[col] = pd.to_numeric(data[col], errors="coerce").fillna(0)
 
-    dfs.append(data)
+        dfs.append(data)
+    except Exception as e:
+        falhas.append((r.get("MÊS") or r.get("MES") or ym or "?", str(e)))
+        # segue o loop (fail-soft)
+
+if falhas:
+    st.warning("Algumas planilhas foram ignoradas por erro transitório:\n" +
+               "\n".join([f"- Mês {m}: {err}" for m, err in falhas]))
 
 if not dfs:
     st.error("Nenhuma planilha de mês pôde ser lida.")
@@ -134,7 +187,7 @@ if "unidade" in df.columns:
 
 # --- METAS (aba METAS) ---
 try:
-    metas_rows = idx.worksheet(INDEX_TAB_METAS).get_all_records()
+    metas_rows = read_sheet_records_by_key(INDEX_SHEET_ID, INDEX_TAB_METAS)
 except Exception:
     metas_rows = []
 
@@ -230,7 +283,7 @@ df_filtrado = df_view[df_view['empresa'] == empresa_selecionada].copy()
 df_marca_all = df_full[df_full["empresa"] == empresa_selecionada].copy()
 
 # mês de referência para metas
-if daily_mode and chosen_date:
+if 'daily_mode' in locals() and daily_mode and 'chosen_date' in locals() and chosen_date:
     ym_ref = f"{chosen_date.year}-{chosen_date.month:02d}"
 elif df_filtrado["__ym__"].notna().any():
     ym_ref = df_filtrado["__ym__"].dropna().iloc[-1]
@@ -243,7 +296,7 @@ total_geral_marca = int(df_filtrado['total'].sum())
 total_rev_marca   = int(df_filtrado['revistorias'].sum())
 total_liq_marca   = total_geral_marca - total_rev_marca
 
-if daily_mode:
+if 'daily_mode' in locals() and daily_mode:
     meta_dia_marca = safe_div(meta_mes_marca, dias_uteis_total)
     faltante_dia = max(int(round(meta_dia_marca)) - total_liq_marca, 0)
     tendencia = safe_div(total_liq_marca, meta_dia_marca) * 100
@@ -292,7 +345,7 @@ st.subheader("📍 Indicadores por Unidade")
 
 # MTD no modo dia (para projeção)
 mtd_liq_by_unit = {}
-if daily_mode and chosen_date is not None:
+if 'daily_mode' in locals() and daily_mode and 'chosen_date' in locals() and chosen_date is not None:
     mask_mtd = df_marca_all["__data__"].apply(lambda d: isinstance(d, date) and d.year==chosen_date.year and d.month==chosen_date.month and d<=chosen_date)
     df_mtd = df_marca_all[mask_mtd & (df_marca_all["empresa"] == empresa_selecionada)]
     if len(df_mtd):
@@ -322,7 +375,7 @@ for _, r in agr.iterrows():
 
     meta_mes = meta_unidade_mes(empresa_selecionada, unidade, ym_ref)
 
-    if daily_mode:
+    if 'daily_mode' in locals() and daily_mode:
         du_unit = dias_uteis_unidade(empresa_selecionada, unidade, ym_ref)
         meta_dia = safe_div(meta_mes, du_unit)
         faltante = max(int(round(meta_dia)) - liq, 0)
@@ -357,10 +410,10 @@ for _, r in agr.iterrows():
 
     linhas.append({
         "Unidade": unidade,
-        "Meta do Dia" if daily_mode else "Meta": int(meta_col),
+        "Meta do Dia" if ('daily_mode' in locals() and daily_mode) else "Meta": int(meta_col),
         total_label: total, rev_label: rev, liq_label: liq,
         falt_label: int(faltante),
-        "Necessidade/dia": int(nec_dia) if daily_mode else round(nec_dia, 1),
+        "Necessidade/dia": int(nec_dia) if ('daily_mode' in locals() and daily_mode) else round(nec_dia, 1),
         tend_label: tendencia_txt,
         "Projeção (Mês)": proj_col,
         "Ticket Médio (R$)": ticket_txt,
@@ -370,9 +423,9 @@ for _, r in agr.iterrows():
 st.dataframe(pd.DataFrame(linhas), use_container_width=True)
 
 # =================== GRÁFICO (matplotlib) ===================
-st.subheader("📊 Produção Realizada por Unidade " + ("(Líquido - Dia)" if daily_mode else "(Líquido)"))
+st.subheader("📊 Produção Realizada por Unidade " + ("(Líquido - Dia)" if ('daily_mode' in locals() and daily_mode) else "(Líquido)"))
 unidades = [d["Unidade"] for d in linhas]
-prod_liq = [d["Total Líquido (Dia)"] if daily_mode else d["Total Líquido"] for d in linhas]
+prod_liq = [d["Total Líquido (Dia)"] if ('daily_mode' in locals() and daily_mode) else d["Total Líquido"] for d in linhas]
 
 fig, ax = plt.subplots(figsize=(10,5))
 barras = ax.bar(unidades, prod_liq)
@@ -382,7 +435,7 @@ for b in barras:
                 textcoords="offset points", ha='center', va='bottom', fontsize=10, fontweight='bold')
 plt.xticks(rotation=0)
 ax.set_ylabel("Produção (Líquido)"); ax.set_xlabel("Unidade")
-ax.set_title("Produção por Unidade" + (" - Dia" if daily_mode else ""))
+ax.set_title("Produção por Unidade" + (" - Dia" if ('daily_mode' in locals() and daily_mode) else ""))
 st.pyplot(fig)
 
 # =================== CONSOLIDADO GERAL ===================
@@ -396,7 +449,7 @@ liq_total  = real_total - rev_total
 
 meta_mes_geral = sum(meta_marca_mes(m, ym_ref) for m in metas_unidades_base.keys())
 
-if daily_mode:
+if 'daily_mode' in locals() and daily_mode:
     meta_dia_geral = safe_div(meta_mes_geral, dias_uteis_total)
     falt_geral = max(int(round(meta_dia_geral)) - liq_total, 0)
     tendencia_g = safe_div(liq_total, meta_dia_geral) * 100
@@ -495,7 +548,7 @@ for day in range(1, n_days+1):
 
 cal_df = pd.DataFrame.from_records(records)
 
-base = alt.Chart(cal_df).properties(width=HEAT_W, height=HEAT_H)
+base = alt.Chart(cal_df).properties(width=980, height=420)
 color_scale = alt.Scale(scheme='viridis', domain=[MIN_PCT, 120], clamp=True) if metric_choice=="% da meta do dia" else alt.Scale(scheme='viridis')
 color_title = '%' if metric_choice=="% da meta do dia" else 'Líquido'
 
@@ -520,7 +573,7 @@ grid_df = pd.DataFrame(grid_records)
 grid = alt.Chart(grid_df).mark_rect(stroke="#E6E6E6", strokeWidth=1, fillOpacity=0).encode(
     x=alt.X('dow_label:N', title='', scale=alt.Scale(domain=ord_dow)),
     y=alt.Y('week_index:O', title='', sort=alt.SortField('week_index', order='ascending'), axis=None)
-).properties(width=HEAT_W, height=HEAT_H)
+).properties(width=980, height=420)
 
 st.altair_chart(grid + chart, use_container_width=False)
 st.caption(f"Escopo: {empresa_selecionada if unidade_heat=='(Consolidado da Marca)' else f'{empresa_selecionada} — {unidade_heat}'}")
@@ -580,7 +633,7 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 st.markdown("<div class='section-title'>🏆 Ranking Diário por Unidade (Tendência do Dia e Variação vs Ontem)</div>", unsafe_allow_html=True)
 
 if 'daily_series' in locals() and len(daily_series):
-    if daily_mode and chosen_date and (chosen_date.year==ref_year and chosen_date.month==ref_month):
+    if 'daily_mode' in locals() and daily_mode and 'chosen_date' in locals() and chosen_date and (chosen_date.year==ref_year and chosen_date.month==ref_month):
         rank_date = chosen_date
     else:
         rank_date = max(daily_series.index) if len(daily_series) else None
