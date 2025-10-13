@@ -1,4 +1,4 @@
-# app.py — robusto (retry + cache) e com correção de KeyError no gráfico
+# app.py — robusto (retry + cache) + separação por marca (5 links)
 import re, calendar, time, random
 from datetime import datetime, date
 
@@ -11,10 +11,22 @@ import altair as alt
 import gspread
 from gspread.exceptions import APIError
 from oauth2client.service_account import ServiceAccountCredentials
+# (se quiser migrar depois: from google.oauth2.service_account import Credentials)
 
 # ================= CONFIG BÁSICA =================
 st.set_page_config(layout="wide", page_title="Acompanhamento de Meta Mensal - Vistorias")
-st.title("📊 Acompanhamento de Meta Mensal - Vistorias")
+
+# ======= ESCOPO DE MARCA (ALL | LOG | STARCHECK | TOKYO | VELOX) =======
+VALID_BRANDS = {"ALL", "LOG", "STARCHECK", "TOKYO", "VELOX"}
+
+def get_brand_scope():
+    b = str(st.secrets.get("DEFAULT_BRAND", "ALL")).strip().upper()
+    return b if b in VALID_BRANDS else "ALL"
+
+BRAND_SCOPE = get_brand_scope()
+title_suffix = "" if BRAND_SCOPE == "ALL" else f" — {BRAND_SCOPE}"
+
+st.title(f"📊 Acompanhamento de Meta Mensal - Vistorias{title_suffix}")
 
 st.markdown("""
 <div style="background-color:#f0f2f6;padding:15px;border-radius:10px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,.1);">
@@ -54,7 +66,10 @@ def _with_retry(fn, *, tries=5, base=0.8, jitter=0.3):
 @st.cache_resource(show_spinner=False)
 def _get_client():
     creds_dict = st.secrets["gcp_service_account"]
+    # oauth2client (como já usa hoje):
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+    # Se migrar futuramente:
+    # creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
     return gspread.authorize(creds)
 
 @st.cache_data(show_spinner=False, ttl=600)
@@ -89,10 +104,14 @@ def _ym_token(x):
     return None
 
 def parse_date_value(x):
+    # versão segura: aceita floats do Excel sem truncar o dia
     if pd.isna(x) or x == "": return pd.NaT
     if isinstance(x, (int,float)) and not isinstance(x,bool):
-        try: return (pd.to_datetime("1899-12-30") + pd.to_timedelta(int(x), unit="D")).date()
-        except: pass
+        try:
+            base = pd.to_datetime("1899-12-30")
+            return (base + pd.to_timedelta(float(x), unit="D")).date()
+        except: 
+            pass
     s = str(x).strip()
     for fmt in ("%d/%m/%Y","%Y-%m-%d","%d-%m-%Y"):
         try: return datetime.strptime(s, fmt).date()
@@ -276,7 +295,16 @@ if len(empresas) == 0:
     st.warning("Não há dados para exibir. Verifique as planilhas.")
     st.stop()
 
-empresa_selecionada = st.selectbox("Selecione a Marca:", empresas)
+# >>> alteração 2: trava marca quando BRAND_SCOPE != ALL
+if BRAND_SCOPE == "ALL":
+    empresa_selecionada = st.selectbox("Selecione a Marca:", empresas)
+else:
+    empresa_selecionada = BRAND_SCOPE
+    if empresa_selecionada not in empresas:
+        st.error(f"Não há dados para a marca '{empresa_selecionada}'.")
+        st.stop()
+    st.info(f"Visualização fixa para a marca **{empresa_selecionada}**")
+
 df_filtrado = df_view[df_view['empresa'] == empresa_selecionada].copy()
 df_marca_all = df_full[df_full["empresa"] == empresa_selecionada].copy()
 
@@ -436,7 +464,8 @@ for r in linhas:
     if "Revistorias" in r and "Revistorias (Dia)" not in r:
         r["Revistorias (Dia)"] = r["Revistorias"]
 
-st.dataframe(pd.DataFrame(linhas), use_container_width=True)
+tabela_unidades_df = pd.DataFrame(linhas)
+st.dataframe(tabela_unidades_df, use_container_width=True)
 
 # =================== GRÁFICO (matplotlib) ===================
 st.subheader("📊 Produção Realizada por Unidade " + ("(Líquido - Dia)" if ('daily_mode' in locals() and daily_mode) else "(Líquido)"))
@@ -457,46 +486,48 @@ for b in barras:
     h = b.get_height()
     ax.annotate(f'{int(h)}', xy=(b.get_x()+b.get_width()/2, h), xytext=(0,5),
                 textcoords="offset points", ha='center', va='bottom', fontsize=10, fontweight='bold')
-plt.xticks(rotation=0)
+plt.xticks(rotation=0 if len(unidades) <= 8 else 30)
 ax.set_ylabel("Produção (Líquido)"); ax.set_xlabel("Unidade")
 ax.set_title("Produção por Unidade" + (" - Dia" if ('daily_mode' in locals() and daily_mode) else ""))
 st.pyplot(fig)
 
-# =================== CONSOLIDADO GERAL ===================
-st.markdown("---")
-st.markdown("## 🏢 Consolidado Geral - Total das 4 Marcas")
+# =================== CONSOLIDADO GERAL (apenas no app ALL) ===================
+# >>> alteração 3: esconder quando BRAND_SCOPE != ALL
+if BRAND_SCOPE == "ALL":
+    st.markdown("---")
+    st.markdown("## 🏢 Consolidado Geral - Total das 4 Marcas")
 
-agg_geral = df_view.groupby("empresa", dropna=False).agg(total=("total","sum"), rev=("revistorias","sum")).reset_index()
-real_total = int(agg_geral["total"].sum())
-rev_total  = int(agg_geral["rev"].sum())
-liq_total  = int(real_total - rev_total)
+    agg_geral = df_view.groupby("empresa", dropna=False).agg(total=("total","sum"), rev=("revistorias","sum")).reset_index()
+    real_total = int(agg_geral["total"].sum())
+    rev_total  = int(agg_geral["rev"].sum())
+    liq_total  = int(real_total - rev_total)
 
-meta_mes_geral = sum(meta_marca_mes(m, ym_ref) for m in metas_unidades_base.keys())
+    meta_mes_geral = sum(meta_marca_mes(m, ym_ref) for m in metas_unidades_base.keys())
 
-if 'daily_mode' in locals() and daily_mode:
-    meta_dia_geral = safe_div(meta_mes_geral, dias_uteis_total)
-    falt_geral = max(int(round(meta_dia_geral)) - liq_total, 0)
-    tendencia_g = safe_div(liq_total, meta_dia_geral) * 100
-    geral_cards = [
-        ("Meta do Dia (Geral)", int(round(meta_dia_geral))), ("Total Geral (Dia)", real_total),
-        ("Total Revistorias (Dia)", rev_total), ("Total Líquido (Dia)", liq_total),
-        ("Faltante (Dia)", falt_geral), ("Necessidade/dia (Dia)", falt_geral),
-        ("Projeção (Dia)", liq_total), ("Tendência (Dia)", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
-    ]
-else:
-    falt_geral = max(meta_mes_geral - liq_total, 0)
-    media_g = safe_div(liq_total, dias_uteis_passados)
-    proj_g_total = liq_total + media_g * dias_uteis_restantes
-    tendencia_g = safe_div(proj_g_total, meta_mes_geral) * 100
-    necessidade_g = 0 if mes_encerrado else int(safe_div(falt_geral, dias_uteis_restantes))
-    geral_cards = [
-        ("Meta Geral", meta_mes_geral), ("Total Geral", real_total), ("Total Revistorias", rev_total),
-        ("Total Líquido", liq_total), ("Faltante", falt_geral),
-        ("Necessidade/dia", necessidade_g),
-        ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendência", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
-    ]
+    if 'daily_mode' in locals() and daily_mode:
+        meta_dia_geral = safe_div(meta_mes_geral, dias_uteis_total)
+        falt_geral = max(int(round(meta_dia_geral)) - liq_total, 0)
+        tendencia_g = safe_div(liq_total, meta_dia_geral) * 100
+        geral_cards = [
+            ("Meta do Dia (Geral)", int(round(meta_dia_geral))), ("Total Geral (Dia)", real_total),
+            ("Total Revistorias (Dia)", rev_total), ("Total Líquido (Dia)", liq_total),
+            ("Faltante (Dia)", falt_geral), ("Necessidade/dia (Dia)", falt_geral),
+            ("Projeção (Dia)", liq_total), ("Tendência (Dia)", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
+        ]
+    else:
+        falt_geral = max(meta_mes_geral - liq_total, 0)
+        media_g = safe_div(liq_total, dias_uteis_passados)
+        proj_g_total = liq_total + media_g * dias_uteis_restantes
+        tendencia_g = safe_div(proj_g_total, meta_mes_geral) * 100
+        necessidade_g = 0 if mes_encerrado else int(safe_div(falt_geral, dias_uteis_restantes))
+        geral_cards = [
+            ("Meta Geral", meta_mes_geral), ("Total Geral", real_total), ("Total Revistorias", rev_total),
+            ("Total Líquido", liq_total), ("Faltante", falt_geral),
+            ("Necessidade/dia", necessidade_g),
+            ("Projeção (Fim do mês)", int(proj_g_total)), ("Tendência", f"{tendencia_g:.0f}% {'🚀' if tendencia_g >= 100 else '😟'}"),
+        ]
 
-st.markdown("<div class='card-container'>" + "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t,v in geral_cards]) + "</div>", unsafe_allow_html=True)
+    st.markdown("<div class='card-container'>" + "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t,v in geral_cards]) + "</div>", unsafe_allow_html=True)
 
 # =================== HEATMAP ===================
 st.markdown("---")
