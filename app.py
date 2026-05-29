@@ -434,6 +434,14 @@ for _, r in agr.iterrows():
 
     pct190 = float(r["pct190"]); icon_190 = "✅" if pct190 >= 25 else ("⚠️" if pct190 >= 20 else "❌")
 
+    # Médias por dia: substituem as três colunas finais que antes repetiam Total/Revistorias/Líquido.
+    # No mês inteiro, usa os dias úteis já passados no filtro lateral.
+    # No modo diário, mantém a leitura do próprio dia selecionado.
+    divisor_media = 1 if ('daily_mode' in locals() and daily_mode) else max(dias_uteis_passados, 1)
+    media_dia_geral = safe_div(total, divisor_media)
+    media_dia_liquida = safe_div(liq, divisor_media)
+    media_dia_revistorias = safe_div(rev, divisor_media)
+
     linhas.append({
         "Unidade": unidade,
         "Meta do Dia" if ('daily_mode' in locals() and daily_mode) else "Meta": int(meta_col),
@@ -443,26 +451,11 @@ for _, r in agr.iterrows():
         tend_label: tendencia_txt,
         "Projeção (Mês)": proj_col,
         "Ticket Médio (R$)": ticket_txt,
-        "% ≥ R$190": f"{pct190:.0f}% {icon_190}"
+        "% ≥ R$190": f"{pct190:.0f}% {icon_190}",
+        "Média Dia Geral": round(media_dia_geral, 1),
+        "Média Dia Líquida": round(media_dia_liquida, 1),
+        "Média Dia Revistorias": round(media_dia_revistorias, 1)
     })
-
-# --- Normalização de chaves para evitar KeyError no gráfico ---
-for r in linhas:
-    # Total Líquido
-    if "Total Líquido (Dia)" in r and "Total Líquido" not in r:
-        r["Total Líquido"] = r["Total Líquido (Dia)"]
-    if "Total Líquido" in r and "Total Líquido (Dia)" not in r:
-        r["Total Líquido (Dia)"] = r["Total Líquido"]
-    # Total
-    if "Total (Dia)" in r and "Total" not in r:
-        r["Total"] = r["Total (Dia)"]
-    if "Total" in r and "Total (Dia)" not in r:
-        r["Total (Dia)"] = r["Total"]
-    # Revistorias
-    if "Revistorias (Dia)" in r and "Revistorias" not in r:
-        r["Revistorias"] = r["Revistorias (Dia)"]
-    if "Revistorias" in r and "Revistorias (Dia)" not in r:
-        r["Revistorias (Dia)"] = r["Revistorias"]
 
 tabela_unidades_df = pd.DataFrame(linhas)
 st.dataframe(tabela_unidades_df, use_container_width=True)
